@@ -85,7 +85,7 @@ export default function GenerateTimetable() {
         <Alert className="border-warning/20 bg-warning/5">
           <AlertTriangle className="h-4 w-4 text-warning" />
           <AlertDescription>
-            <strong>Database Connection Required:</strong> To generate and save timetables, you need to connect to Supabase. 
+            <strong>Database Connection Required:</strong> To generate and save timetables for Mohan Babu University, you need to connect to Supabase. 
             Click the green Supabase button in the top right to set up the database integration.
           </AlertDescription>
         </Alert>

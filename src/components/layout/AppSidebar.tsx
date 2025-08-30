@@ -65,8 +65,8 @@ export function AppSidebar() {
                 <GraduationCap className="w-5 h-5 text-primary-foreground" />
               </div>
               <div>
-                <h2 className="font-bold text-lg">TimeTable Pro</h2>
-                <p className="text-xs text-muted-foreground">AI Generator</p>
+                <h2 className="font-bold text-lg">Mohan Babu University</h2>
+                <p className="text-xs text-muted-foreground">AI Timetable Generator</p>
               </div>
             </div>
           ) : (
