@@ -15,47 +15,61 @@ export default function GenerateTimetable() {
   const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
   const [selectedSemester, setSelectedSemester] = useState("1");
   const [departments, setDepartments] = useState<any[]>([]);
+  const [sections, setSections] = useState<any[]>([]);
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [staff, setStaff] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<any[]>([]);
   const [stats, setStats] = useState({ subjects: 0, rooms: 0, staff: 0, timeSlots: 6 });
+  const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
   useEffect(() => {
-    fetchDepartmentsAndStats();
+    fetchAllData();
   }, []);
 
-  const fetchDepartmentsAndStats = async () => {
+  const fetchAllData = async () => {
     try {
-      // Fetch departments
-      const { data: deptData } = await supabase
-        .from('departments')
-        .select('*');
+      setLoading(true);
       
-      // Fetch sections for each department
-      const { data: sectionsData } = await supabase
-        .from('sections')
-        .select('name, department_id');
-
-      // Fetch stats
-      const [subjectsCount, roomsCount, staffCount] = await Promise.all([
-        supabase.from('subjects').select('id', { count: 'exact' }),
-        supabase.from('rooms').select('id', { count: 'exact' }),
-        supabase.from('staff').select('id', { count: 'exact' })
+      // Fetch all data in parallel
+      const [deptResult, sectionsResult, subjectsResult, staffResult, roomsResult] = await Promise.all([
+        supabase.from('departments').select('*'),
+        supabase.from('sections').select('*, departments(name)'),
+        supabase.from('subjects').select('*, departments(name)'),
+        supabase.from('staff').select('*, departments(name)'),
+        supabase.from('rooms').select('*')
       ]);
 
-      // Group sections by department
-      const deptWithSections = deptData?.map(dept => ({
-        ...dept,
-        sections: sectionsData?.filter(s => s.department_id === dept.id).map(s => s.name) || []
-      })) || [];
+      console.log('Fetched data:', { deptResult, sectionsResult, subjectsResult, staffResult, roomsResult });
 
-      setDepartments(deptWithSections);
+      if (deptResult.error) console.error('Departments error:', deptResult.error);
+      if (sectionsResult.error) console.error('Sections error:', sectionsResult.error);
+      if (subjectsResult.error) console.error('Subjects error:', subjectsResult.error);
+      if (staffResult.error) console.error('Staff error:', staffResult.error);
+      if (roomsResult.error) console.error('Rooms error:', roomsResult.error);
+
+      setDepartments(deptResult.data || []);
+      setSections(sectionsResult.data || []);
+      setSubjects(subjectsResult.data || []);
+      setStaff(staffResult.data || []);
+      setRooms(roomsResult.data || []);
+      
       setStats({
-        subjects: subjectsCount.count || 0,
-        rooms: roomsCount.count || 0,
-        staff: staffCount.count || 0,
+        subjects: subjectsResult.data?.length || 0,
+        rooms: roomsResult.data?.length || 0,
+        staff: staffResult.data?.length || 0,
         timeSlots: 6
       });
+
     } catch (error) {
       console.error('Error fetching data:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load data. Please refresh the page.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -235,33 +249,53 @@ export default function GenerateTimetable() {
                 <label className="text-sm font-medium mb-3 block">
                   Select Departments ({selectedDepartments.length} selected)
                 </label>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {departments.map((dept) => (
-                    <div
-                      key={dept.id}
-                      className={`p-4 border rounded-lg cursor-pointer transition-all hover:shadow-sm ${
-                        selectedDepartments.includes(dept.id)
-                          ? "border-primary bg-primary/5"
-                          : "border-border"
-                      }`}
-                      onClick={() => toggleDepartment(dept.id)}
-                    >
-                      <div className="flex items-start gap-3">
-                        <Checkbox
-                          checked={selectedDepartments.includes(dept.id)}
-                          onChange={() => {}}
-                          className="mt-1"
-                        />
-                        <div className="flex-1">
-                          <p className="font-medium">{dept.name}</p>
-                          <p className="text-sm text-muted-foreground">
-                            Sections: {dept.sections.join(", ")}
-                          </p>
-                        </div>
+                {loading ? (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {[1, 2, 3, 4].map((i) => (
+                      <div key={i} className="p-4 border rounded-lg animate-pulse">
+                        <div className="h-4 bg-muted rounded mb-2"></div>
+                        <div className="h-3 bg-muted rounded w-2/3"></div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                ) : departments.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <p>No departments found.</p>
+                    <p className="text-sm mt-1">Please add departments in the Departments page first.</p>
+                  </div>
+                ) : (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {departments.map((dept) => {
+                      const deptSections = sections.filter(s => s.department_id === dept.id);
+                      return (
+                        <div
+                          key={dept.id}
+                          className={`p-4 border rounded-lg cursor-pointer transition-all hover:shadow-sm ${
+                            selectedDepartments.includes(dept.id)
+                              ? "border-primary bg-primary/5"
+                              : "border-border"
+                          }`}
+                          onClick={() => toggleDepartment(dept.id)}
+                        >
+                          <div className="flex items-start gap-3">
+                            <Checkbox
+                              checked={selectedDepartments.includes(dept.id)}
+                              onChange={() => {}}
+                              className="mt-1"
+                            />
+                            <div className="flex-1">
+                              <p className="font-medium">{dept.name}</p>
+                              <p className="text-xs text-muted-foreground">Code: {dept.code}</p>
+                              <p className="text-sm text-muted-foreground">
+                                Sections: {deptSections.length > 0 ? deptSections.map(s => s.name).join(", ") : "None"}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
