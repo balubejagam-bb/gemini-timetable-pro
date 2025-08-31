@@ -187,7 +187,7 @@ export default function GenerateTimetable() {
     );
   };
 
-  const needsSupabase = false; // Supabase is now connected
+  const needsSupabase = false; // Database is connected and has sample data
 
   return (
     <div className="space-y-6 animate-fade-in">
