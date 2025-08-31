@@ -14,7 +14,332 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      college_timings: {
+        Row: {
+          break_end: string | null
+          break_start: string | null
+          created_at: string
+          day_of_week: number
+          end_time: string
+          id: string
+          lunch_end: string | null
+          lunch_start: string | null
+          start_time: string
+          updated_at: string
+        }
+        Insert: {
+          break_end?: string | null
+          break_start?: string | null
+          created_at?: string
+          day_of_week: number
+          end_time: string
+          id?: string
+          lunch_end?: string | null
+          lunch_start?: string | null
+          start_time: string
+          updated_at?: string
+        }
+        Update: {
+          break_end?: string | null
+          break_start?: string | null
+          created_at?: string
+          day_of_week?: number
+          end_time?: string
+          id?: string
+          lunch_end?: string | null
+          lunch_start?: string | null
+          start_time?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      departments: {
+        Row: {
+          code: string
+          created_at: string
+          id: string
+          name: string
+          updated_at: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          id?: string
+          name: string
+          updated_at?: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          id?: string
+          name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      rooms: {
+        Row: {
+          building: string | null
+          capacity: number
+          created_at: string
+          floor: number | null
+          id: string
+          room_number: string
+          room_type: string
+          updated_at: string
+        }
+        Insert: {
+          building?: string | null
+          capacity: number
+          created_at?: string
+          floor?: number | null
+          id?: string
+          room_number: string
+          room_type: string
+          updated_at?: string
+        }
+        Update: {
+          building?: string | null
+          capacity?: number
+          created_at?: string
+          floor?: number | null
+          id?: string
+          room_number?: string
+          room_type?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      sections: {
+        Row: {
+          created_at: string
+          department_id: string
+          id: string
+          name: string
+          semester: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          department_id: string
+          id?: string
+          name: string
+          semester: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          department_id?: string
+          id?: string
+          name?: string
+          semester?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "sections_department_id_fkey"
+            columns: ["department_id"]
+            isOneToOne: false
+            referencedRelation: "departments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      staff: {
+        Row: {
+          created_at: string
+          department_id: string
+          designation: string
+          email: string | null
+          id: string
+          max_hours_per_week: number
+          name: string
+          phone: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          department_id: string
+          designation: string
+          email?: string | null
+          id?: string
+          max_hours_per_week?: number
+          name: string
+          phone?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          department_id?: string
+          designation?: string
+          email?: string | null
+          id?: string
+          max_hours_per_week?: number
+          name?: string
+          phone?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_department_id_fkey"
+            columns: ["department_id"]
+            isOneToOne: false
+            referencedRelation: "departments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      staff_subjects: {
+        Row: {
+          created_at: string
+          id: string
+          staff_id: string
+          subject_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          staff_id: string
+          subject_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          staff_id?: string
+          subject_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_subjects_staff_id_fkey"
+            columns: ["staff_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "staff_subjects_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      subjects: {
+        Row: {
+          code: string
+          created_at: string
+          credits: number
+          department_id: string
+          hours_per_week: number
+          id: string
+          name: string
+          semester: number
+          subject_type: string
+          updated_at: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          credits?: number
+          department_id: string
+          hours_per_week?: number
+          id?: string
+          name: string
+          semester: number
+          subject_type: string
+          updated_at?: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          credits?: number
+          department_id?: string
+          hours_per_week?: number
+          id?: string
+          name?: string
+          semester?: number
+          subject_type?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "subjects_department_id_fkey"
+            columns: ["department_id"]
+            isOneToOne: false
+            referencedRelation: "departments"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      timetables: {
+        Row: {
+          created_at: string
+          day_of_week: number
+          id: string
+          room_id: string
+          section_id: string
+          semester: number
+          staff_id: string
+          subject_id: string
+          time_slot: number
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          day_of_week: number
+          id?: string
+          room_id: string
+          section_id: string
+          semester: number
+          staff_id: string
+          subject_id: string
+          time_slot: number
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          day_of_week?: number
+          id?: string
+          room_id?: string
+          section_id?: string
+          semester?: number
+          staff_id?: string
+          subject_id?: string
+          time_slot?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "timetables_room_id_fkey"
+            columns: ["room_id"]
+            isOneToOne: false
+            referencedRelation: "rooms"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "timetables_section_id_fkey"
+            columns: ["section_id"]
+            isOneToOne: false
+            referencedRelation: "sections"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "timetables_staff_id_fkey"
+            columns: ["staff_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "timetables_subject_id_fkey"
+            columns: ["subject_id"]
+            isOneToOne: false
+            referencedRelation: "subjects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
