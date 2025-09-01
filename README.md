@@ -1,73 +1,159 @@
-# Welcome to your Lovable project
+# Gemini Timetable Pro
 
-## Project info
+AI-powered university timetable management system using Google's Gemini AI for intelligent schedule generation.
 
-**URL**: https://lovable.dev/projects/f7ddfa8c-aa4b-4b2d-a937-d0dde0131350
+## 🚀 Features
 
-## How can I edit this code?
+- **AI-Powered Timetable Generation**: Uses Google Gemini 1.5 Pro for intelligent scheduling
+- **Conflict Resolution**: Automatically resolves staff, room, and time conflicts  
+- **University Management**: Complete management of departments, sections, subjects, staff, and rooms
+- **Real-time Database**: Powered by Supabase for real-time data synchronization
+- **Modern UI**: Built with React, TypeScript, and shadcn/ui components
+- **Responsive Design**: Works seamlessly on desktop and mobile devices
 
-There are several ways of editing your application.
+## 🛠️ Quick Start
 
-**Use Lovable**
+### Prerequisites
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/f7ddfa8c-aa4b-4b2d-a937-d0dde0131350) and start prompting.
+- Node.js 18+ and npm
+- Supabase account
+- Google AI API key
 
-Changes made via Lovable will be committed automatically to this repo.
+### Installation
 
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
+```bash
+# Clone the repository
 git clone <YOUR_GIT_URL>
+cd gemini-timetable-pro
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+# Install dependencies
+npm install
 
-# Step 3: Install the necessary dependencies.
-npm i
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your API keys (see Environment Setup below)
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Start development server
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## 🔧 Environment Setup
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+**⚠️ Important**: You must configure environment variables before the application will work properly.
 
-**Use GitHub Codespaces**
+### Required Environment Variables
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+1. **Copy the environment template**:
+   ```bash
+   cp .env.example .env
+   ```
 
-## What technologies are used for this project?
+2. **Get your Google AI API key**:
+   - Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
+   - Create an API key
+   - Copy the key to your `.env` file
 
-This project is built with:
+3. **Configure Supabase**:
+   - Create a project at [Supabase](https://supabase.com)
+   - Copy your project URL, project ID, and anon key to `.env`
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+4. **Set up Supabase Edge Functions**:
+   - In your Supabase dashboard, go to Edge Functions > Settings
+   - Add environment variable: `GOOGLE_AI_API_KEY` with your Google AI key
 
-## How can I deploy this project?
+### Example .env file:
 
-Simply open [Lovable](https://lovable.dev/projects/f7ddfa8c-aa4b-4b2d-a937-d0dde0131350) and click on Share -> Publish.
+```env
+VITE_SUPABASE_URL="https://your-project.supabase.co"
+VITE_SUPABASE_PUBLISHABLE_KEY="your_supabase_anon_key"
+VITE_SUPABASE_PROJECT_ID="your_project_id"
+VITE_GOOGLE_AI_API_KEY="your_google_ai_api_key"
+```
 
-## Can I connect a custom domain to my Lovable project?
+📖 **For detailed setup instructions, see [ENVIRONMENT_SETUP.md](./ENVIRONMENT_SETUP.md)**
 
-Yes, you can!
+## 🏗️ Project Structure
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+```
+src/
+├── components/          # Reusable UI components
+├── pages/              # Application pages
+├── integrations/       # Third-party integrations (Supabase)
+├── lib/                # Utility functions and configurations
+└── hooks/              # Custom React hooks
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/tips-tricks/custom-domain#step-by-step-guide)
+supabase/
+├── functions/          # Edge functions (AI generation)
+├── migrations/         # Database migrations
+└── config.toml        # Supabase configuration
+```
+
+## 🎯 Usage
+
+1. **Configure Settings**: Go to Settings page and verify your API keys
+2. **Add University Data**: 
+   - Add departments in the Departments page
+   - Add sections, subjects, staff, and rooms
+3. **Generate Timetables**:
+   - Go to Generate Timetable page
+   - Select departments and semester
+   - Click "Generate Timetables" 
+4. **View Results**: Check the Timetable View page for generated schedules
+
+## 🤖 AI Features
+
+- **Smart Conflict Resolution**: Prevents scheduling conflicts automatically
+- **Load Balancing**: Distributes faculty workload evenly
+- **Room Optimization**: Matches room types with subject requirements
+- **Schedule Optimization**: Creates efficient, gap-free schedules
+
+## 🔒 Security
+
+- Environment variables are properly configured and not committed to version control
+- API keys are stored securely and accessed through environment configuration
+- Supabase handles authentication and database security
+- All sensitive data is protected with appropriate access controls
+
+## 📱 Tech Stack
+
+- **Frontend**: React 18, TypeScript, Vite
+- **UI Framework**: shadcn/ui, Tailwind CSS
+- **Backend**: Supabase (Database, Auth, Edge Functions)
+- **AI**: Google Gemini 1.5 Pro
+- **Deployment**: Ready for Vercel, Netlify, or other platforms
+
+## 🚀 Deployment
+
+### Using Lovable (Recommended)
+1. Open [Lovable](https://lovable.dev/projects/f7ddfa8c-aa4b-4b2d-a937-d0dde0131350)
+2. Click Share → Publish
+3. Configure your environment variables in the deployment settings
+
+### Manual Deployment
+1. Build the project: `npm run build`
+2. Deploy the `dist` folder to your hosting platform
+3. Configure environment variables in your hosting provider
+4. Deploy Supabase edge functions: `supabase functions deploy`
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Make your changes and commit: `git commit -m 'Add feature'`
+4. Push to the branch: `git push origin feature-name`
+5. Submit a pull request
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+## 🆘 Support
+
+For support and questions:
+- Check [ENVIRONMENT_SETUP.md](./ENVIRONMENT_SETUP.md) for configuration help
+- Review the [Supabase Documentation](https://supabase.com/docs)
+- Consult [Google AI Documentation](https://ai.google.dev/docs)
+
+## Project Links
+
+**Lovable Project**: https://lovable.dev/projects/f7ddfa8c-aa4b-4b2d-a937-d0dde0131350

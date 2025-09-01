@@ -51,15 +51,25 @@ serve(async (req) => {
     const { selectedDepartments, selectedSemester }: TimetableRequest = JSON.parse(body);
     console.log('Parsed data:', { selectedDepartments, selectedSemester });
 
-    // Fetch all required data
+    // Validate input data
+    if (!selectedDepartments || selectedDepartments.length === 0) {
+      throw new Error('At least one department must be selected');
+    }
+    
+    if (!selectedSemester || selectedSemester < 1 || selectedSemester > 8) {
+      throw new Error('Valid semester (1-8) must be provided');
+    }
+
+    // Fetch all required data including staff-subject relationships
     console.log('Fetching data from database...');
-    const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult] = await Promise.all([
+    const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
       supabaseClient.from('departments').select('*').in('id', selectedDepartments),
       supabaseClient.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
       supabaseClient.from('subjects').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
       supabaseClient.from('staff').select('*').in('department_id', selectedDepartments),
       supabaseClient.from('rooms').select('*'),
-      supabaseClient.from('college_timings').select('*').order('day_of_week')
+      supabaseClient.from('college_timings').select('*').order('day_of_week'),
+      supabaseClient.from('staff_subjects').select('staff_id, subject_id, staff:staff_id(*), subjects:subject_id(*)')
     ]);
 
     console.log('Database query results:', {
@@ -68,18 +78,20 @@ serve(async (req) => {
       subjects: subjectsResult.error ? 'error' : subjectsResult.data?.length,
       staff: staffResult.error ? 'error' : staffResult.data?.length,
       rooms: roomsResult.error ? 'error' : roomsResult.data?.length,
-      timings: timingsResult.error ? 'error' : timingsResult.data?.length
+      timings: timingsResult.error ? 'error' : timingsResult.data?.length,
+      staffSubjects: staffSubjectsResult.error ? 'error' : staffSubjectsResult.data?.length
     });
 
     if (departmentsResult.error || sectionsResult.error || subjectsResult.error || 
-        staffResult.error || roomsResult.error || timingsResult.error) {
+        staffResult.error || roomsResult.error || timingsResult.error || staffSubjectsResult.error) {
       console.error('Database errors:', {
         departments: departmentsResult.error,
         sections: sectionsResult.error,
         subjects: subjectsResult.error,
         staff: staffResult.error,
         rooms: roomsResult.error,
-        timings: timingsResult.error
+        timings: timingsResult.error,
+        staffSubjects: staffSubjectsResult.error
       });
       throw new Error('Failed to fetch required data from database');
     }
@@ -90,6 +102,7 @@ serve(async (req) => {
     const staff = staffResult.data || [];
     const rooms = roomsResult.data || [];
     const timings = timingsResult.data || [];
+    const staffSubjects = staffSubjectsResult.data || [];
 
     console.log('Data fetched successfully:', {
       departments: departments.length,
@@ -97,7 +110,8 @@ serve(async (req) => {
       subjects: subjects.length,
       staff: staff.length,
       rooms: rooms.length,
-      timings: timings.length
+      timings: timings.length,
+      staffSubjects: staffSubjects.length
     });
 
     // Clear existing timetables for selected sections
@@ -138,39 +152,65 @@ serve(async (req) => {
         room_number: r.room_number, 
         capacity: r.capacity,
         room_type: r.room_type 
+      })),
+      staffSubjects: staffSubjects.map(ss => ({
+        staff_id: ss.staff_id,
+        subject_id: ss.subject_id
+      })),
+      timings: timings.map(t => ({
+        day_of_week: t.day_of_week,
+        start_time: t.start_time,
+        end_time: t.end_time,
+        break_start: t.break_start,
+        break_end: t.break_end,
+        lunch_start: t.lunch_start,
+        lunch_end: t.lunch_end
       }))
     };
 
-    const prompt = `Generate university timetable entries in JSON format for semester ${selectedSemester}.
+    const prompt = `You are an AI timetable generator for a university. Generate a comprehensive timetable in JSON format for semester ${selectedSemester}.
 
-Requirements:
-- Each section needs classes for their subjects
-- No staff conflicts (same staff at same time)
-- No room conflicts (same room at same time)
-- Lab subjects need lab-type rooms, theory subjects can use classrooms
-- Time slots: 1-8 representing different periods
-- Days: 1-6 (Monday to Saturday)
+CRITICAL REQUIREMENTS:
+1. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping)
+2. NO staff conflicts: Same staff cannot be in two places at once
+3. NO room conflicts: Same room cannot host two classes simultaneously
+4. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms
+5. Theory subjects can use any classroom or lab
+6. Each subject must be scheduled for its required hours_per_week
+7. Distribute classes evenly across the week
+8. Respect college timings and avoid break/lunch periods
+9. Time slots: 1-8 representing different periods of the day
+10. Days: 1-6 (Monday=1 to Saturday=6)
 
-Data:
+OPTIMIZATION GOALS:
+- Minimize gaps in student schedules
+- Balance faculty workload (respect max_hours_per_week)
+- Use room capacity efficiently
+- Spread lab sessions across different days
+
+DATA PROVIDED:
 ${JSON.stringify(promptData, null, 2)}
 
-Return ONLY a JSON array of timetable entries:
+RESPONSE FORMAT:
+Return ONLY a valid JSON array with no additional text or explanation:
 [
   {
-    "section_id": "uuid",
-    "subject_id": "uuid", 
-    "staff_id": "uuid",
-    "room_id": "uuid",
-    "day_of_week": number,
-    "time_slot": number,
+    "section_id": "uuid-here",
+    "subject_id": "uuid-here", 
+    "staff_id": "uuid-here",
+    "room_id": "uuid-here",
+    "day_of_week": 1,
+    "time_slot": 1,
     "semester": ${selectedSemester}
   }
-]`;
+]
 
-    console.log('Calling Gemini 2.0 Flash...');
+Generate entries for ALL sections and subjects. Each subject should appear multiple times per week based on its hours_per_week value.`;
+
+    console.log('Calling Gemini 1.5 Pro...');
     
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${googleApiKey}`,
       {
         method: 'POST',
         headers: {
@@ -183,9 +223,21 @@ Return ONLY a JSON array of timetable entries:
             }]
           }],
           generationConfig: {
-            maxOutputTokens: 40000,
+            maxOutputTokens: 8192,
             temperature: 0.1,
-          }
+            topK: 1,
+            topP: 0.8,
+          },
+          safetySettings: [
+            {
+              category: "HARM_CATEGORY_HARASSMENT",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            },
+            {
+              category: "HARM_CATEGORY_HATE_SPEECH",
+              threshold: "BLOCK_MEDIUM_AND_ABOVE"
+            }
+          ]
         })
       }
     );
@@ -225,17 +277,34 @@ Return ONLY a JSON array of timetable entries:
     const timetableEntries = JSON.parse(jsonMatch[0]);
     console.log('Parsed timetable entries:', timetableEntries.length);
 
+    // Validate timetable entries
+    const validatedEntries = timetableEntries.filter(entry => {
+      return entry.section_id && 
+             entry.subject_id && 
+             entry.staff_id && 
+             entry.room_id && 
+             entry.day_of_week >= 1 && 
+             entry.day_of_week <= 6 &&
+             entry.time_slot >= 1 && 
+             entry.time_slot <= 8 &&
+             entry.semester === selectedSemester;
+    });
+
+    console.log(`Validated ${validatedEntries.length} out of ${timetableEntries.length} entries`);
+
     // Insert new timetable entries
-    if (timetableEntries.length > 0) {
+    if (validatedEntries.length > 0) {
       console.log('Inserting timetable entries...');
       const { error: insertError } = await supabaseClient
         .from('timetables')
-        .insert(timetableEntries);
+        .insert(validatedEntries);
 
       if (insertError) {
         console.error('Insert error:', insertError);
         throw new Error('Failed to save timetable to database');
       }
+    } else {
+      throw new Error('No valid timetable entries were generated by AI');
     }
 
     console.log('Timetable generation completed successfully');
@@ -243,8 +312,12 @@ Return ONLY a JSON array of timetable entries:
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: 'Timetable generated successfully using Gemini 2.0 Flash',
-        entriesCount: timetableEntries.length
+        message: 'Timetable generated successfully using Gemini 1.5 Pro with enhanced AI optimization',
+        entriesCount: validatedEntries.length,
+        totalGenerated: timetableEntries.length,
+        model: 'gemini-1.5-pro',
+        sectionsProcessed: sections.length,
+        subjectsProcessed: subjects.length
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

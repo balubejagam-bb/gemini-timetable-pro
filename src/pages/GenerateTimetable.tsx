@@ -89,7 +89,7 @@ export default function GenerateTimetable() {
     try {
       setProgress(20);
       
-      console.log('Calling AI timetable generation with Gemini 2.0 Flash...');
+      console.log('Calling AI timetable generation with Gemini 1.5 Pro...');
       
       const { data, error } = await supabase.functions.invoke('generate-timetable-ai', {
         body: {
@@ -114,7 +114,7 @@ export default function GenerateTimetable() {
       
       toast({
         title: "Success!",
-        description: `AI-powered timetable generated successfully! Created ${data.entriesCount} entries using Gemini 2.0 Flash.`,
+        description: `AI-powered timetable generated successfully! Created ${data.entriesCount} entries using ${data.model} for ${data.sectionsProcessed} sections and ${data.subjectsProcessed} subjects.`,
       });
 
     } catch (error) {

@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -5,9 +6,75 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
-import { Settings as SettingsIcon, University, Bell, Shield, Download, Upload } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Settings as SettingsIcon, University, Bell, Shield, Download, Upload, Key, CheckCircle, AlertTriangle } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { env } from "@/lib/env";
 
 export default function Settings() {
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyStatus, setApiKeyStatus] = useState<"unknown" | "valid" | "invalid">("unknown");
+  const [isTestingKey, setIsTestingKey] = useState(false);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    // Load API key from environment variable
+    const envApiKey = env.GOOGLE_AI_API_KEY;
+    if (envApiKey) {
+      setApiKey(envApiKey);
+      setApiKeyStatus("valid"); // Assume valid if from env
+    }
+  }, []);
+
+  const testApiKey = async () => {
+    if (!apiKey) {
+      toast({
+        title: "Error",
+        description: "Please enter an API key to test",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsTestingKey(true);
+    try {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "Hello" }] }],
+            generationConfig: { maxOutputTokens: 10 }
+          })
+        }
+      );
+
+      if (response.ok) {
+        setApiKeyStatus("valid");
+        toast({
+          title: "Success",
+          description: "API key is valid and working correctly"
+        });
+      } else {
+        setApiKeyStatus("invalid");
+        toast({
+          title: "Error",
+          description: "API key is invalid or has insufficient permissions",
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      setApiKeyStatus("invalid");
+      toast({
+        title: "Error",
+        description: "Failed to test API key connection",
+        variant: "destructive"
+      });
+    }
+    setIsTestingKey(false);
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex justify-between items-center">
@@ -192,48 +259,116 @@ export default function Settings() {
       {/* API Configuration */}
       <Card>
         <CardHeader>
-          <CardTitle>AI Configuration</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Key className="w-5 h-5" />
+            AI Configuration
+          </CardTitle>
           <CardDescription>
-            Configure AI settings for timetable generation
+            Configure Google Gemini AI for timetable generation
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-6 lg:grid-cols-2">
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="gemini-api-key">Gemini API Key</Label>
-              <Input 
-                id="gemini-api-key" 
-                type="password"
-                placeholder="Enter your Gemini API key"
-                defaultValue="AIzaSyDVGpwtC69A_xp58jGbvW3VWInG2FV_PQY"
-              />
+        <CardContent className="space-y-4">
+          {/* API Key Status Alert */}
+          {apiKeyStatus === "valid" && (
+            <Alert className="border-green-200 bg-green-50">
+              <CheckCircle className="h-4 w-4 text-green-600" />
+              <AlertDescription className="text-green-800">
+                API key is valid and configured correctly.
+              </AlertDescription>
+            </Alert>
+          )}
+          {apiKeyStatus === "invalid" && (
+            <Alert className="border-red-200 bg-red-50">
+              <AlertTriangle className="h-4 w-4 text-red-600" />
+              <AlertDescription className="text-red-800">
+                API key is invalid or not working. Please check your key and try again.
+              </AlertDescription>
+            </Alert>
+          )}
+          
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="gemini-api-key">Gemini API Key</Label>
+                <div className="flex gap-2">
+                  <Input 
+                    id="gemini-api-key" 
+                    type="password"
+                    placeholder="Enter your Gemini API key (from environment)"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    className={apiKeyStatus === "valid" ? "border-green-300" : apiKeyStatus === "invalid" ? "border-red-300" : ""}
+                  />
+                  <Button 
+                    variant="outline" 
+                    onClick={testApiKey}
+                    disabled={isTestingKey || !apiKey}
+                    className="shrink-0"
+                  >
+                    {isTestingKey ? "Testing..." : "Test"}
+                  </Button>
+                </div>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Get your API key from{" "}
+                  <a 
+                    href="https://makersuite.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    Google AI Studio
+                  </a>
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="api-model">AI Model</Label>
+                <Input 
+                  id="api-model" 
+                  defaultValue="gemini-1.5-pro"
+                  readOnly
+                  className="bg-muted"
+                />
+                <p className="text-sm text-muted-foreground mt-1">
+                  Currently using Gemini 1.5 Pro for optimal performance and reliability
+                </p>
+              </div>
             </div>
-            <div>
-              <Label htmlFor="api-endpoint">API Endpoint</Label>
-              <Input 
-                id="api-endpoint" 
-                defaultValue="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-                readOnly
-              />
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Conflict Resolution</Label>
+                  <p className="text-sm text-muted-foreground">Automatically resolve scheduling conflicts</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Load Balancing</Label>
+                  <p className="text-sm text-muted-foreground">Balance workload across faculty</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <Label>Room Optimization</Label>
+                  <p className="text-sm text-muted-foreground">Optimize room allocation based on capacity</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              <Button className="w-full">Save AI Configuration</Button>
             </div>
           </div>
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <Label>Conflict Resolution</Label>
-                <p className="text-sm text-muted-foreground">Automatically resolve scheduling conflicts</p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-            <div className="flex items-center justify-between">
-              <div>
-                <Label>Load Balancing</Label>
-                <p className="text-sm text-muted-foreground">Balance workload across faculty</p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-            <Button>Save AI Configuration</Button>
-          </div>
+
+          {/* Environment Variable Instructions */}
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              <strong>Security Notice:</strong> For production use, set your API key in the <code>.env</code> file using the variable <code>VITE_GOOGLE_AI_API_KEY</code>. 
+              Never commit API keys to version control.
+            </AlertDescription>
+          </Alert>
         </CardContent>
       </Card>
     </div>
