@@ -13,22 +13,46 @@ interface TimetableRequest {
 }
 
 serve(async (req) => {
-  console.log('=== Timetable AI Generation Request ===');
+  console.log('=== Edge Function Started ===');
+  console.log('Method:', req.method);
+  console.log('URL:', req.url);
   
   if (req.method === 'OPTIONS') {
+    console.log('Handling CORS preflight');
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-    );
+    console.log('Creating Supabase client...');
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY');
+    const googleApiKey = Deno.env.get('GOOGLE_AI_API_KEY');
+    
+    console.log('Environment check:', {
+      hasSupabaseUrl: !!supabaseUrl,
+      hasSupabaseKey: !!supabaseAnonKey,
+      hasGoogleKey: !!googleApiKey
+    });
 
-    const { selectedDepartments, selectedSemester }: TimetableRequest = await req.json();
-    console.log('Request data:', { selectedDepartments, selectedSemester });
+    if (!supabaseUrl || !supabaseAnonKey) {
+      throw new Error('Missing Supabase configuration');
+    }
+
+    if (!googleApiKey) {
+      throw new Error('Google AI API key not configured');
+    }
+
+    const supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
+
+    console.log('Parsing request body...');
+    const body = await req.text();
+    console.log('Raw body:', body);
+    
+    const { selectedDepartments, selectedSemester }: TimetableRequest = JSON.parse(body);
+    console.log('Parsed data:', { selectedDepartments, selectedSemester });
 
     // Fetch all required data
+    console.log('Fetching data from database...');
     const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult] = await Promise.all([
       supabaseClient.from('departments').select('*').in('id', selectedDepartments),
       supabaseClient.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
@@ -38,9 +62,26 @@ serve(async (req) => {
       supabaseClient.from('college_timings').select('*').order('day_of_week')
     ]);
 
+    console.log('Database query results:', {
+      departments: departmentsResult.error ? 'error' : departmentsResult.data?.length,
+      sections: sectionsResult.error ? 'error' : sectionsResult.data?.length,
+      subjects: subjectsResult.error ? 'error' : subjectsResult.data?.length,
+      staff: staffResult.error ? 'error' : staffResult.data?.length,
+      rooms: roomsResult.error ? 'error' : roomsResult.data?.length,
+      timings: timingsResult.error ? 'error' : timingsResult.data?.length
+    });
+
     if (departmentsResult.error || sectionsResult.error || subjectsResult.error || 
         staffResult.error || roomsResult.error || timingsResult.error) {
-      throw new Error('Failed to fetch required data');
+      console.error('Database errors:', {
+        departments: departmentsResult.error,
+        sections: sectionsResult.error,
+        subjects: subjectsResult.error,
+        staff: staffResult.error,
+        rooms: roomsResult.error,
+        timings: timingsResult.error
+      });
+      throw new Error('Failed to fetch required data from database');
     }
 
     const departments = departmentsResult.data || [];
@@ -50,7 +91,7 @@ serve(async (req) => {
     const rooms = roomsResult.data || [];
     const timings = timingsResult.data || [];
 
-    console.log('Fetched data counts:', {
+    console.log('Data fetched successfully:', {
       departments: departments.length,
       sections: sections.length,
       subjects: subjects.length,
@@ -59,7 +100,22 @@ serve(async (req) => {
       timings: timings.length
     });
 
-    // Prepare data for AI
+    // Clear existing timetables for selected sections
+    console.log('Clearing existing timetables...');
+    const sectionIds = sections.map(s => s.id);
+    if (sectionIds.length > 0) {
+      const { error: deleteError } = await supabaseClient
+        .from('timetables')
+        .delete()
+        .in('section_id', sectionIds);
+      
+      if (deleteError) {
+        console.error('Delete error:', deleteError);
+        throw new Error('Failed to clear existing timetables');
+      }
+    }
+
+    // Prepare simplified data for AI
     const promptData = {
       departments: departments.map(d => ({ id: d.id, name: d.name, code: d.code })),
       sections: sections.map(s => ({ id: s.id, name: s.name, department_id: s.department_id })),
@@ -82,40 +138,23 @@ serve(async (req) => {
         room_number: r.room_number, 
         capacity: r.capacity,
         room_type: r.room_type 
-      })),
-      timings: timings.map(t => ({
-        day_of_week: t.day_of_week,
-        start_time: t.start_time,
-        end_time: t.end_time,
-        break_start: t.break_start,
-        break_end: t.break_end,
-        lunch_start: t.lunch_start,
-        lunch_end: t.lunch_end
       }))
     };
 
-    const prompt = `You are an expert timetable scheduling system. Generate an optimal university timetable based on the following data:
+    const prompt = `Generate university timetable entries in JSON format for semester ${selectedSemester}.
 
-REQUIREMENTS:
-1. Each section should have classes for all their subjects
-2. No staff member should have more than their max_hours_per_week
-3. No room conflicts (same room at same time)
-4. No staff conflicts (same staff at same time)
-5. Lab subjects need lab-type rooms, theory subjects can use classrooms
-6. Distribute subjects evenly across the week
-7. Respect college timings and break times
+Requirements:
+- Each section needs classes for their subjects
+- No staff conflicts (same staff at same time)
+- No room conflicts (same room at same time)
+- Lab subjects need lab-type rooms, theory subjects can use classrooms
+- Time slots: 1-8 representing different periods
+- Days: 1-6 (Monday to Saturday)
 
-DATA:
+Data:
 ${JSON.stringify(promptData, null, 2)}
 
-INSTRUCTIONS:
-- Generate timetable entries for semester ${selectedSemester}
-- Each entry should specify: section_id, subject_id, staff_id, room_id, day_of_week (1-6), time_slot (1-8)
-- Time slots: 1=9:00-10:00, 2=10:00-11:00, 3=11:00-12:00, 4=12:00-1:00, 5=2:00-3:00, 6=3:00-4:00, 7=4:00-5:00, 8=5:00-6:00
-- Avoid scheduling during break and lunch times
-- Return ONLY a valid JSON array of timetable entries, no other text
-
-RESPONSE FORMAT:
+Return ONLY a JSON array of timetable entries:
 [
   {
     "section_id": "uuid",
@@ -130,12 +169,7 @@ RESPONSE FORMAT:
 
     console.log('Calling Gemini 2.0 Flash...');
     
-    const googleApiKey = Deno.env.get('GOOGLE_AI_API_KEY');
-    if (!googleApiKey) {
-      throw new Error('Google AI API key not configured');
-    }
-
-    const response = await fetch(
+    const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${googleApiKey}`,
       {
         method: 'POST',
@@ -156,52 +190,60 @@ RESPONSE FORMAT:
       }
     );
 
-    if (!response.ok) {
-      const errorText = await response.text();
+    console.log('Gemini response status:', geminiResponse.status);
+
+    if (!geminiResponse.ok) {
+      const errorText = await geminiResponse.text();
       console.error('Gemini API error:', errorText);
-      throw new Error(`Gemini API error: ${response.status}`);
+      throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
     }
 
-    const geminiResult = await response.json();
-    console.log('Gemini response received');
+    const geminiResult = await geminiResponse.json();
+    console.log('Gemini response structure:', {
+      hasCandidates: !!geminiResult.candidates,
+      candidatesLength: geminiResult.candidates?.length,
+      hasContent: !!geminiResult.candidates?.[0]?.content,
+      hasParts: !!geminiResult.candidates?.[0]?.content?.parts,
+      partsLength: geminiResult.candidates?.[0]?.content?.parts?.length
+    });
     
     if (!geminiResult.candidates?.[0]?.content?.parts?.[0]?.text) {
-      throw new Error('Invalid response from Gemini');
+      console.error('Invalid Gemini response:', geminiResult);
+      throw new Error('Invalid response from Gemini AI');
     }
 
     let generatedText = geminiResult.candidates[0].content.parts[0].text;
+    console.log('Generated text preview:', generatedText.substring(0, 200) + '...');
     
     // Extract JSON from response
     const jsonMatch = generatedText.match(/\[[\s\S]*\]/);
     if (!jsonMatch) {
-      throw new Error('No valid JSON found in Gemini response');
+      console.error('No JSON found in response:', generatedText);
+      throw new Error('No valid JSON found in AI response');
     }
     
     const timetableEntries = JSON.parse(jsonMatch[0]);
-    console.log('Generated timetable entries:', timetableEntries.length);
-
-    // Clear existing timetables for selected departments and semester
-    await supabaseClient
-      .from('timetables')
-      .delete()
-      .in('section_id', sections.map(s => s.id));
+    console.log('Parsed timetable entries:', timetableEntries.length);
 
     // Insert new timetable entries
-    const { error: insertError } = await supabaseClient
-      .from('timetables')
-      .insert(timetableEntries);
+    if (timetableEntries.length > 0) {
+      console.log('Inserting timetable entries...');
+      const { error: insertError } = await supabaseClient
+        .from('timetables')
+        .insert(timetableEntries);
 
-    if (insertError) {
-      console.error('Insert error:', insertError);
-      throw new Error('Failed to save timetable');
+      if (insertError) {
+        console.error('Insert error:', insertError);
+        throw new Error('Failed to save timetable to database');
+      }
     }
 
-    console.log('Timetable generated successfully');
+    console.log('Timetable generation completed successfully');
 
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: 'Timetable generated successfully using AI',
+        message: 'Timetable generated successfully using Gemini 2.0 Flash',
         entriesCount: timetableEntries.length
       }),
       {
@@ -210,11 +252,14 @@ RESPONSE FORMAT:
     );
 
   } catch (error) {
-    console.error('Error in generate-timetable-ai:', error);
+    console.error('Edge function error:', error);
+    console.error('Error stack:', error.stack);
+    
     return new Response(
       JSON.stringify({ 
         success: false, 
-        error: error.message 
+        error: error.message,
+        details: error.stack 
       }),
       {
         status: 500,
