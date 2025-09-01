@@ -87,93 +87,42 @@ export default function GenerateTimetable() {
     setProgress(0);
 
     try {
-      // Clear existing timetables for selected departments and semester
-      await supabase
-        .from('timetables')
-        .delete()
-        .in('section_id', selectedDepartments)
-        .eq('semester', parseInt(selectedSemester));
-
       setProgress(20);
-
-      // Fetch all required data
-      const [sectionsResult, subjectsResult, staffResult, roomsResult] = await Promise.all([
-        supabase.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', parseInt(selectedSemester)),
-        supabase.from('subjects').select('*, staff_subjects(staff_id)').in('department_id', selectedDepartments).eq('semester', parseInt(selectedSemester)),
-        supabase.from('staff').select('*').in('department_id', selectedDepartments),
-        supabase.from('rooms').select('*')
-      ]);
-
-      const sections = sectionsResult.data || [];
-      const subjects = subjectsResult.data || [];
-      const staff = staffResult.data || [];
-      const rooms = roomsResult.data || [];
-
-      setProgress(40);
-
-      // Generate timetables using simple algorithm
-      const generatedTimetables = [];
-      const timeSlots = [1, 2, 3, 4, 5, 6]; // 6 time slots per day
-      const days = [1, 2, 3, 4, 5, 6]; // Monday to Saturday
-
-      for (const section of sections) {
-        const sectionSubjects = subjects.filter(s => s.department_id === section.department_id);
-        let currentSubjectIndex = 0;
-        
-        for (const day of days) {
-          for (const slot of timeSlots) {
-            if (currentSubjectIndex < sectionSubjects.length) {
-              const subject = sectionSubjects[currentSubjectIndex];
-              const availableStaff = staff.find(s => s.department_id === section.department_id);
-              const availableRoom = rooms[Math.floor(Math.random() * rooms.length)];
-
-              if (availableStaff && availableRoom) {
-                generatedTimetables.push({
-                  section_id: section.id,
-                  subject_id: subject.id,
-                  staff_id: availableStaff.id,
-                  room_id: availableRoom.id,
-                  day_of_week: day,
-                  time_slot: slot,
-                  semester: parseInt(selectedSemester)
-                });
-              }
-              
-              currentSubjectIndex = (currentSubjectIndex + 1) % sectionSubjects.length;
-            }
-          }
+      
+      console.log('Calling AI timetable generation with Gemini 2.0 Flash...');
+      
+      const { data, error } = await supabase.functions.invoke('generate-timetable-ai', {
+        body: {
+          selectedDepartments,
+          selectedSemester: parseInt(selectedSemester)
         }
-      }
+      });
 
       setProgress(80);
 
-      // Insert generated timetables
-      if (generatedTimetables.length > 0) {
-        const { error } = await supabase
-          .from('timetables')
-          .insert(generatedTimetables);
+      if (error) {
+        console.error('Edge function error:', error);
+        throw new Error(error.message || 'Failed to generate timetable');
+      }
 
-        if (error) {
-          throw error;
-        }
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to generate timetable');
       }
 
       setProgress(100);
+      setIsGenerating(false);
       
-      setTimeout(() => {
-        setIsGenerating(false);
-        toast({
-          title: "Success!",
-          description: `Generated ${generatedTimetables.length} timetable entries for ${sections.length} sections.`,
-        });
-      }, 500);
+      toast({
+        title: "Success!",
+        description: `AI-powered timetable generated successfully! Created ${data.entriesCount} entries using Gemini 2.0 Flash.`,
+      });
 
     } catch (error) {
       console.error('Error generating timetables:', error);
       setIsGenerating(false);
       toast({
         title: "Error",
-        description: "Failed to generate timetables. Please try again.",
+        description: `Failed to generate timetables: ${error.message}. Please try again.`,
         variant: "destructive"
       });
     }
