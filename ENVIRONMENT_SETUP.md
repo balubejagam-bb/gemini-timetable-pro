@@ -46,7 +46,7 @@ VITE_SUPABASE_PUBLISHABLE_KEY="your_supabase_anon_key"
 VITE_SUPABASE_URL="https://your_project_id.supabase.co"
 
 # Google AI API Key for Gemini
-VITE_GOOGLE_AI_API_KEY="your_gemini_api_key_here"
+VITE_GOOGLE_AI_API_KEY="your_google_ai_api_key_here"
 ```
 
 ### 5. Configure Supabase Edge Function Environment

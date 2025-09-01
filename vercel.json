@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ],
+  "env": {
+    "SUPABASE_URL": "@supabase-url",
+    "SUPABASE_ANON_KEY": "@supabase-anon-key",
+    "SUPABASE_PROJECT_ID": "@supabase-project-id",
+    "GOOGLE_AI_API_KEY": "@google-ai-api-key"
+  },
+  "build": {
+    "env": {
+      "SUPABASE_URL": "@supabase-url",
+      "SUPABASE_ANON_KEY": "@supabase-anon-key", 
+      "SUPABASE_PROJECT_ID": "@supabase-project-id",
+      "GOOGLE_AI_API_KEY": "@google-ai-api-key"
+    }
+  }
+}
