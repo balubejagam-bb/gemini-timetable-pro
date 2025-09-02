@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Upload, Building2, Plus, Edit, Trash2, Save, X, Search } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -27,6 +28,7 @@ export default function Departments() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const { toast } = useToast();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const fetchDepartments = useCallback(async () => {
     try {
@@ -218,17 +220,44 @@ export default function Departments() {
     dept.code.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const allFilteredSelected = filteredDepartments.length > 0 && filteredDepartments.every(d => selectedIds.has(d.id));
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected department(s)? Related sections, subjects and staff may be affected.`)) return;
+    try {
+      setLoading(true);
+      const ids = Array.from(selectedIds);
+      const { error } = await supabase.from('departments').delete().in('id', ids);
+      if (error) throw error;
+      toast({ title: 'Deleted', description: `${ids.length} departments removed.` });
+      setSelectedIds(new Set());
+      fetchDepartments();
+    } catch (e) {
+      console.error('Bulk delete departments error', e);
+      toast({ title: 'Error', description: 'Failed bulk delete', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Departments</h1>
           <p className="text-muted-foreground">
             Manage academic departments and their information
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <div className="relative">
             <input
               type="file"
@@ -237,16 +266,38 @@ export default function Departments() {
               className="hidden"
               id="dept-upload"
             />
-            <Button variant="outline" asChild className="gap-2">
+            <Button variant="outline" size="sm" asChild className="gap-2">
               <label htmlFor="dept-upload" className="cursor-pointer">
                 <Upload className="w-4 h-4" />
                 Import CSV
               </label>
             </Button>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const csvContent =
+                'name,code,description,hod\n' +
+                'Computer Science Engineering,CSE,Core computer science department,Dr. John Smith\n' +
+                'Electronics and Communication,ECE,Electronics and circuits department,Dr. Jane Doe\n' +
+                'Mechanical Engineering,MECH,Mechanical systems and design department,Dr. Robert Johnson\n';
+              const blob = new Blob([csvContent], { type: 'text/csv' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'departments_sample.csv';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download Sample CSV
+          </Button>
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
-              <Button className="gap-2">
+              <Button size="sm" className="gap-2">
                 <Plus className="w-4 h-4" />
                 Add Department
               </Button>
@@ -261,6 +312,11 @@ export default function Departments() {
               />
             </DialogContent>
           </Dialog>
+          {selectedIds.size > 0 && (
+            <Button variant="secondary" size="sm" onClick={handleBulkDelete} className="gap-2">
+              <Trash2 className="w-4 h-4" /> Delete Selected ({selectedIds.size})
+            </Button>
+          )}
         </div>
       </div>
 
@@ -276,6 +332,22 @@ export default function Departments() {
           />
         </div>
       </div>
+      {filteredDepartments.length > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={() => {
+            if (allFilteredSelected) {
+              setSelectedIds(new Set());
+            } else {
+              setSelectedIds(new Set(filteredDepartments.map(d => d.id)));
+            }
+          }}
+        >
+          {allFilteredSelected ? 'Clear Selection' : 'Select All Shown'}
+        </Button>
+      )}
 
       {/* Departments Grid */}
       <Card>
@@ -301,59 +373,46 @@ export default function Departments() {
             </div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredDepartments.map((dept) => (
-                <Card key={dept.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h3 className="font-semibold">{dept.name}</h3>
-                        <p className="text-sm text-muted-foreground font-mono">{dept.code}</p>
+              {filteredDepartments.map((dept) => {
+                const checked = selectedIds.has(dept.id);
+                return (
+                  <Card key={dept.id} className={`hover:shadow-md transition-shadow ${checked ? 'ring-2 ring-primary/40' : ''}`}>
+                    <CardContent className="p-4">
+                      <div className="flex justify-between items-start mb-2 gap-2">
+                        <div className="flex items-start gap-2 flex-1">
+                          <Checkbox checked={checked} onCheckedChange={() => toggleSelect(dept.id)} />
+                          <div>
+                            <h3 className="font-semibold">{dept.name}</h3>
+                            <p className="text-sm text-muted-foreground font-mono">{dept.code}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setEditingDepartment(dept)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteDepartment(dept.id)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setEditingDepartment(dept)}
-                        >
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteDepartment(dept.id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                      {dept.description && (
+                        <p className="text-sm text-muted-foreground mb-2">{dept.description}</p>
+                      )}
+                      <div className="flex gap-3 text-sm mb-2">
+                        <span className="text-blue-600">{dept.total_subjects || 0} Subjects</span>
+                        <span className="text-green-600">{dept.total_staff || 0} Staff</span>
+                        <span className="text-purple-600">{dept.total_sections || 0} Sections</span>
                       </div>
-                    </div>
-                    
-                    {dept.description && (
-                      <p className="text-sm text-muted-foreground mb-2">
-                        {dept.description}
-                      </p>
-                    )}
-                    
-                    <div className="flex gap-3 text-sm mb-2">
-                      <span className="text-blue-600">
-                        {dept.total_subjects || 0} Subjects
-                      </span>
-                      <span className="text-green-600">
-                        {dept.total_staff || 0} Staff
-                      </span>
-                      <span className="text-purple-600">
-                        {dept.total_sections || 0} Sections
-                      </span>
-                    </div>
-                    
-                    {dept.hod && (
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">HOD: </span>
-                        <span className="font-medium">{dept.hod}</span>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
+                      {dept.hod && (
+                        <div className="text-sm">
+                          <span className="text-muted-foreground">HOD: </span>
+                          <span className="font-medium">{dept.hod}</span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </CardContent>

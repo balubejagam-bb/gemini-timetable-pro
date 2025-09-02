@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Download, Edit3, RefreshCw, Calendar, Grid, Eye } from "lucide-react";
@@ -68,6 +72,9 @@ export default function TimetableView() {
   const [timetableData, setTimetableData] = useState<TimetableEntry[]>([]);
   const [allTimetablesData, setAllTimetablesData] = useState<AllTimetablesData>({});
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]); // deptId|sectionName|semester
   const { toast } = useToast();
 
   const fetchDepartments = useCallback(async () => {
@@ -219,8 +226,8 @@ export default function TimetableView() {
     );
   };
 
-  const renderTimetableGrid = (entries: TimetableEntry[], title: string) => (
-    <Card className="mb-6">
+  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string) => (
+    <Card className="mb-6 timetable-grid-export" data-export-key={exportKey || ''}>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <CardDescription>{entries.length} entries loaded</CardDescription>
@@ -279,6 +286,92 @@ export default function TimetableView() {
   const selectedDeptName = departments.find(d => d.id === selectedDepartment)?.name || "";
   const selectedSectionName = sections.find(s => s.id === selectedSection)?.name || "";
 
+  const handleExportPDF = async () => {
+    try {
+      setExporting(true);
+      if (viewMode === 'single') {
+        if (!timetableData.length) {
+          toast({ title: 'Nothing to export', description: 'Load a timetable first', variant: 'destructive' });
+          return;
+        }
+        const element = document.getElementById('single-timetable-export');
+        if (!element) {
+          toast({ title: 'Error', description: 'Could not find timetable element', variant: 'destructive' });
+          return;
+        }
+        const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff' });
+        const imgData = canvas.toDataURL('image/png');
+        const pdf = new jsPDF('landscape', 'mm', 'a4');
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const usableWidth = pageWidth - margin * 2;
+        const imgHeight = canvas.height * (usableWidth / canvas.width);
+        let y = margin;
+        if (imgHeight < pageHeight - margin * 2) {
+          // center vertically if shorter
+          y = (pageHeight - imgHeight) / 2;
+        }
+        pdf.addImage(imgData, 'PNG', margin, y, usableWidth, imgHeight);
+        const fileName = `${selectedDeptName || 'Department'}-${selectedSectionName || 'Section'}-Sem${selectedSemester || ''}-timetable.pdf`.replace(/\s+/g, '_');
+        pdf.save(fileName);
+      } else {
+        // all timetables: optionally filter by selectedExportKeys
+        const allGrids = Array.from(document.querySelectorAll('.timetable-grid-export')) as HTMLElement[];
+        const grids = selectedExportKeys.length
+          ? allGrids.filter(g => selectedExportKeys.includes(g.dataset.exportKey || ''))
+          : allGrids;
+        if (!grids.length) {
+          toast({ title: 'Nothing to export', description: 'No timetables loaded', variant: 'destructive' });
+          return;
+        }
+        const pdf = new jsPDF('landscape', 'mm', 'a4');
+        let first = true;
+        for (const grid of Array.from(grids)) {
+          const canvas = await html2canvas(grid as HTMLElement, { scale: 2, backgroundColor: '#ffffff' });
+          const imgData = canvas.toDataURL('image/png');
+          if (!first) pdf.addPage();
+          const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            const margin = 10;
+            const usableWidth = pageWidth - margin * 2;
+            const imgHeight = canvas.height * (usableWidth / canvas.width);
+            let y = margin;
+            if (imgHeight < pageHeight - margin * 2) {
+              y = (pageHeight - imgHeight) / 2;
+            }
+            pdf.addImage(imgData, 'PNG', margin, y, usableWidth, imgHeight);
+          first = false;
+        }
+        const nameSuffix = selectedExportKeys.length ? 'selected' : 'all';
+        pdf.save(`${nameSuffix}-timetables.pdf`);
+      }
+      toast({ title: 'Exported', description: 'PDF downloaded successfully' });
+    } catch (err) {
+      console.error('PDF export error', err);
+      toast({ title: 'Export failed', description: 'Could not generate PDF', variant: 'destructive' });
+    } finally {
+      setExporting(false);
+      setExportDialogOpen(false);
+    }
+  };
+
+  const toggleExportKey = (key: string) => {
+    setSelectedExportKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
+  };
+
+  const selectAllExports = () => {
+    const keys: string[] = [];
+    Object.entries(allTimetablesData).forEach(([deptId, dept]) => {
+      Object.entries(dept.sections).forEach(([sectionKey, section]) => {
+        keys.push(`${deptId}|${section.sectionName}|${section.semester}`);
+      });
+    });
+    setSelectedExportKeys(keys);
+  };
+
+  const clearAllExports = () => setSelectedExportKeys([]);
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page Header */}
@@ -290,10 +383,29 @@ export default function TimetableView() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" className="gap-2">
-            <Download className="w-4 h-4" />
-            Export PDF
-          </Button>
+          {viewMode === 'all' ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={() => setExportDialogOpen(true)}
+              disabled={exporting || (viewMode === 'all' && !Object.keys(allTimetablesData).length)}
+            >
+              <Download className="w-4 h-4" />
+              {exporting ? 'Exporting...' : 'Export PDF'}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={handleExportPDF}
+              disabled={exporting || (viewMode === 'single' && !timetableData.length)}
+            >
+              <Download className="w-4 h-4" />
+              {exporting ? 'Exporting...' : 'Export PDF'}
+            </Button>
+          )}
           <Button variant="outline" size="sm" className="gap-2">
             <Edit3 className="w-4 h-4" />
             Edit
@@ -402,10 +514,12 @@ export default function TimetableView() {
               </CardContent>
             </Card>
           ) : (
-            renderTimetableGrid(
-              timetableData,
-              `${selectedDeptName} - ${selectedSectionName} Timetable (Semester ${selectedSemester})`
-            )
+            <div id="single-timetable-export">
+              {renderTimetableGrid(
+                timetableData,
+                `${selectedDeptName} - ${selectedSectionName} Timetable (Semester ${selectedSemester})`
+              )}
+            </div>
           )}
         </TabsContent>
 
@@ -432,7 +546,8 @@ export default function TimetableView() {
                   {Object.entries(department.sections).map(([sectionKey, section]) => (
                     renderTimetableGrid(
                       section.entries,
-                      `${section.sectionName} - Semester ${section.semester}`
+                      `${section.sectionName} - Semester ${section.semester}`,
+                      `${deptId}|${section.sectionName}|${section.semester}`
                     )
                   ))}
                 </div>
@@ -441,6 +556,53 @@ export default function TimetableView() {
           )}
         </TabsContent>
       </Tabs>
+
+      <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Select Timetables to Export</DialogTitle>
+            <DialogDescription>
+              Choose specific section timetables. Leave all unselected to export every timetable.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-6 mt-2">
+            <div className="flex gap-2 flex-wrap">
+              <Button type="button" size="sm" variant="outline" onClick={selectAllExports}>Select All</Button>
+              <Button type="button" size="sm" variant="outline" onClick={clearAllExports}>Clear All</Button>
+              <div className="text-xs text-muted-foreground self-center">{selectedExportKeys.length} selected</div>
+            </div>
+            <div className="space-y-6">
+              {Object.entries(allTimetablesData).map(([deptId, dept]) => (
+                <div key={deptId} className="border rounded-lg p-4">
+                  <h3 className="font-semibold mb-3 text-sm">{dept.departmentName}</h3>
+                  <div className="grid md:grid-cols-2 gap-3">
+                    {Object.entries(dept.sections).map(([sectionKey, section]) => {
+                      const key = `${deptId}|${section.sectionName}|${section.semester}`;
+                      const checked = selectedExportKeys.includes(key);
+                      return (
+                        <label
+                          key={key}
+                          className={`flex items-start gap-3 p-3 border rounded-md cursor-pointer text-sm hover:bg-muted/40 transition ${checked ? 'border-primary bg-primary/5' : 'border-border'}`}
+                          onClick={() => toggleExportKey(key)}
+                        >
+                          <Checkbox checked={checked} onCheckedChange={() => {}} className="mt-0.5" />
+                          <span>{section.sectionName} (Sem {section.semester})</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter className="mt-4 flex gap-2">
+            <Button type="button" variant="outline" onClick={() => setExportDialogOpen(false)} disabled={exporting}>Cancel</Button>
+            <Button type="button" onClick={handleExportPDF} disabled={exporting} className="gap-2">
+              {exporting ? 'Exporting...' : `Export ${selectedExportKeys.length ? 'Selected' : 'All'}`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

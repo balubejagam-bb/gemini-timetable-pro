@@ -72,6 +72,14 @@ interface GenerationData {
   staffSubjects: StaffSubject[];
 }
 
+// Advanced generation options
+interface AdvancedGenerationOptions {
+  sections?: string[];
+  subjects?: string[];
+  staff?: string[];
+  advancedMode?: boolean;
+}
+
 export class ClientTimetableGenerator {
   private googleApiKey: string;
 
@@ -83,7 +91,11 @@ export class ClientTimetableGenerator {
     this.googleApiKey = apiKey;
   }
 
-  async generateTimetable(selectedDepartments: string[], selectedSemester: number): Promise<{
+  async generateTimetable(
+    selectedDepartments: string[], 
+    selectedSemester: number,
+    options?: AdvancedGenerationOptions
+  ): Promise<{
     success: boolean;
     message: string;
     entriesCount?: number;
@@ -95,7 +107,9 @@ export class ClientTimetableGenerator {
       
       // Validate input
       if (!selectedDepartments || selectedDepartments.length === 0) {
-        throw new Error('At least one department must be selected');
+        if (!options?.advancedMode || !options?.subjects || options.subjects.length === 0) {
+          throw new Error('At least one department must be selected in standard mode, or subjects in advanced mode');
+        }
       }
       
       if (!selectedSemester || selectedSemester < 1 || selectedSemester > 8) {
@@ -104,7 +118,7 @@ export class ClientTimetableGenerator {
 
       // Fetch all required data
       console.log('Fetching data from database...');
-      const data = await this.fetchData(selectedDepartments, selectedSemester);
+      const data = await this.fetchData(selectedDepartments, selectedSemester, options);
       
       // Clear existing timetables
       console.log('Clearing existing timetables...');
@@ -112,11 +126,13 @@ export class ClientTimetableGenerator {
       
       // Generate timetable using AI
       console.log('Generating timetable with AI...');
-      const timetableEntries = await this.callGeminiAPI(data, selectedSemester);
+      const timetableEntries = await this.callGeminiAPI(data, selectedSemester, options);
       
       // Validate and save entries
       console.log('Validating and saving entries...');
-      const validatedEntries = this.validateEntries(timetableEntries, selectedSemester);
+  let validatedEntries = this.validateEntries(timetableEntries, selectedSemester);
+  // Enforce minimum daily classes (at least 3 per day) after conflict validation
+  validatedEntries = this.enforceMinimumDailyClasses(validatedEntries, data, selectedSemester);
       
       if (validatedEntries.length > 0) {
         await this.saveTimetable(validatedEntries);
@@ -141,14 +157,87 @@ export class ClientTimetableGenerator {
     }
   }
 
-  private async fetchData(selectedDepartments: string[], selectedSemester: number): Promise<GenerationData> {
+  private async fetchData(
+    selectedDepartments: string[], 
+    selectedSemester: number,
+    options?: AdvancedGenerationOptions
+  ): Promise<GenerationData> {
     console.log(`Fetching data for departments: ${selectedDepartments.join(', ')} and semester: ${selectedSemester}`);
+    console.log('Advanced options:', options);
     
+    // Department fetch
+    let departmentsPromise;
+    if (selectedDepartments.length > 0) {
+      departmentsPromise = supabase.from('departments').select('*').in('id', selectedDepartments);
+    } else {
+      departmentsPromise = supabase.from('departments').select('*');
+    }
+    
+    // Section fetch
+    let sectionsPromise;
+    if (options?.sections && options.sections.length > 0) {
+      // If specific sections are selected in advanced mode
+      sectionsPromise = supabase.from('sections')
+        .select('*')
+        .in('id', options.sections)
+        .eq('semester', selectedSemester);
+    } else if (selectedDepartments.length > 0) {
+      // Standard mode department filtering
+      sectionsPromise = supabase.from('sections')
+        .select('*')
+        .in('department_id', selectedDepartments)
+        .eq('semester', selectedSemester);
+    } else {
+      // Fallback to all sections for this semester
+      sectionsPromise = supabase.from('sections')
+        .select('*')
+        .eq('semester', selectedSemester);
+    }
+    
+    // Subject fetch
+    let subjectsPromise;
+    if (options?.subjects && options.subjects.length > 0) {
+      // If specific subjects are selected in advanced mode
+      subjectsPromise = supabase.from('subjects')
+        .select('*')
+        .in('id', options.subjects)
+        .eq('semester', selectedSemester);
+    } else if (selectedDepartments.length > 0) {
+      // Standard mode department filtering
+      subjectsPromise = supabase.from('subjects')
+        .select('*')
+        .in('department_id', selectedDepartments)
+        .eq('semester', selectedSemester);
+    } else {
+      // Fallback to all subjects for this semester
+      subjectsPromise = supabase.from('subjects')
+        .select('*')
+        .eq('semester', selectedSemester);
+    }
+    
+    // Staff fetch
+    let staffPromise;
+    if (options?.staff && options.staff.length > 0) {
+      // If specific staff are selected in advanced mode
+      staffPromise = supabase.from('staff')
+        .select('*')
+        .in('id', options.staff);
+    } else if (selectedDepartments.length > 0) {
+      // Standard mode department filtering
+      staffPromise = supabase.from('staff')
+        .select('*')
+        .in('department_id', selectedDepartments);
+    } else {
+      // Fallback to all staff
+      staffPromise = supabase.from('staff')
+        .select('*');
+    }
+
     const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
-      supabase.from('departments').select('*').in('id', selectedDepartments),
-      supabase.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
-      supabase.from('subjects').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
-      supabase.from('staff').select('*').in('department_id', selectedDepartments),
+      departmentsPromise,
+      sectionsPromise,
+      subjectsPromise,
+      staffPromise,
       supabase.from('rooms').select('*'),
       supabase.from('college_timings').select('*').order('day_of_week'),
       supabase.from('staff_subjects').select('staff_id, subject_id, staff:staff_id(*), subjects:subject_id(*)')
@@ -180,6 +269,15 @@ export class ClientTimetableGenerator {
       timings: timingsResult.data || [],
       staffSubjects: staffSubjectsResult.data || []
     };
+
+    // Filter staff_subjects to only include selected subjects and staff
+    if (options?.advancedMode && (options?.subjects?.length > 0 || options?.staff?.length > 0)) {
+      data.staffSubjects = data.staffSubjects.filter(ss => {
+        const subjectMatch = !options?.subjects?.length || options.subjects.includes(ss.subject_id);
+        const staffMatch = !options?.staff?.length || options.staff.includes(ss.staff_id);
+        return subjectMatch && staffMatch;
+      });
+    }
 
     // Log data counts for debugging
     console.log('Fetched data counts:', {
@@ -244,7 +342,11 @@ export class ClientTimetableGenerator {
     }
   }
 
-  private async callGeminiAPI(data: GenerationData, selectedSemester: number): Promise<TimetableEntry[]> {
+  private async callGeminiAPI(
+    data: GenerationData, 
+    selectedSemester: number,
+    options?: AdvancedGenerationOptions
+  ): Promise<TimetableEntry[]> {
     // Prepare simplified data for AI
     const promptData = {
       departments: data.departments.map(d => ({ id: d.id, name: d.name, code: d.code })),
@@ -284,12 +386,23 @@ export class ClientTimetableGenerator {
       }))
     };
 
+    // Add information about advanced selection
+    const additionalNotes = options?.advancedMode ? 
+      `IMPORTANT ADVANCED MODE SELECTION:
+      - User has specifically selected ${options?.sections?.length || 0} sections
+      - User has specifically selected ${options?.subjects?.length || 0} subjects  
+      - User has specifically selected ${options?.staff?.length || 0} staff members
+      
+      When in advanced mode, ONLY use the sections, subjects, and staff that have been explicitly provided in the data.` : '';
+
     const prompt = `You are an AI timetable generator for Mohan Babu University. Generate a comprehensive timetable in JSON format for semester ${selectedSemester} based on the reference image format provided.
 
 CRITICAL DATABASE CONSTRAINTS (WILL CAUSE SAVE FAILURES IF VIOLATED):
 1. UNIQUE(staff_id, day_of_week, time_slot) - Same staff cannot teach multiple classes at same time
 2. UNIQUE(room_id, day_of_week, time_slot) - Same room cannot host multiple classes at same time  
 3. UNIQUE(section_id, day_of_week, time_slot) - Same section cannot have multiple classes at same time
+
+${additionalNotes}
 
 TIMETABLE FORMAT REQUIREMENTS (Based on MBU Format):
 1. Days: 1-6 (Monday=1 to Saturday=6)
@@ -313,7 +426,7 @@ ENHANCED SUBJECT HANDLING:
 8. Each subject must be scheduled for its required hours_per_week across the week
 9. Time slots: 1-5 representing periods (MBU format)
 10. Days: 1-6 (Monday=1 to Saturday=6)
-11. NO GAPS: Every time slot should have scheduled classes to avoid free periods
+11. MINIMUM DAILY LOAD: Each section must have AT LEAST 3 classes per day (days 1-6). It's acceptable to leave other periods free.
 
 CONFLICT RESOLUTION STRATEGY:
 - If a staff member is already assigned to day X, slot Y, find different staff for other subjects at that time
@@ -328,7 +441,7 @@ OPTIMIZATION GOALS:
 - Balance faculty workload (respect max_hours_per_week)  
 - Use room capacity efficiently
 - Spread lab sessions across different days to avoid congestion
-- Minimize gaps in student schedules
+- Ensure at least 3 classes per section per day (may repeat subjects if necessary to meet the minimum)
 - Follow MBU timetable format with proper time slots (1-5) and days (1-6)
 
 DATA PROVIDED:
@@ -355,11 +468,12 @@ IMPORTANT: Before adding each entry, verify:
 - Use time_slot values 1-5 only (MBU format)
 - Use day_of_week values 1-6 (Monday to Saturday)
 
-Generate entries for ALL sections and subjects, ensuring NO DUPLICATE assignments for the same day/time combination.
+Generate entries for ALL sections and subjects. Ensure NO DUPLICATE assignments for the same day/time combination.
+If a section would otherwise have fewer than 3 classes on a day, you may repeat a subject already scheduled that week for that section to reach the minimum of 3.
 For subjects needing both theory and lab: create separate entries with different room types but same subject_id.`;
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.googleApiKey}`,
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.googleApiKey}`,
       {
         method: 'POST',
         headers: {
@@ -502,6 +616,93 @@ For subjects needing both theory and lab: create separate entries with different
     return conflictFreeEntries;
   }
 
+  // Post-processing: guarantee minimum 3 classes per day for each section (days 1-6)
+  private enforceMinimumDailyClasses(
+    entries: TimetableEntry[],
+    data: GenerationData,
+    selectedSemester: number
+  ): TimetableEntry[] {
+  const MIN_PER_DAY = 3;
+    const days = [1,2,3,4,5,6];
+    const timeSlots = [1,2,3,4,5];
+    const result: TimetableEntry[] = [...entries];
+
+    const staffSlots = new Set(result.map(e => `${e.staff_id}:${e.day_of_week}:${e.time_slot}`));
+    const roomSlots = new Set(result.map(e => `${e.room_id}:${e.day_of_week}:${e.time_slot}`));
+    const sectionSlots = new Set(result.map(e => `${e.section_id}:${e.day_of_week}:${e.time_slot}`));
+
+    const sections = data.sections.filter(s => s.semester === selectedSemester);
+
+    const subjectsByDept = new Map<string, Subject[]>();
+    data.subjects.forEach(sub => {
+      if(!subjectsByDept.has(sub.department_id)) subjectsByDept.set(sub.department_id, []);
+      subjectsByDept.get(sub.department_id)!.push(sub);
+    });
+
+    const subjectStaffMap = new Map<string, Staff[]>();
+    data.staffSubjects.forEach(ss => {
+      const staff = data.staff.find(st => st.id === ss.staff_id);
+      if (staff) {
+        if(!subjectStaffMap.has(ss.subject_id)) subjectStaffMap.set(ss.subject_id, []);
+        subjectStaffMap.get(ss.subject_id)!.push(staff);
+      }
+    });
+
+    const roomsByType = {
+      lab: data.rooms.filter(r => r.room_type === 'lab' || r.room_type === 'practical'),
+      any: data.rooms
+    };
+
+    for (const section of sections) {
+      for (const day of days) {
+        const dayCount = result.filter(e => e.section_id === section.id && e.day_of_week === day).length;
+        if (dayCount >= MIN_PER_DAY) continue;
+        let needed = MIN_PER_DAY - dayCount;
+        const candidateSubjects = subjectsByDept.get(section.department_id) || [];
+        if (candidateSubjects.length === 0) continue;
+        let subjectIndex = 0;
+        for (const slot of timeSlots) {
+          if (needed <= 0) break;
+          const sectionKey = `${section.id}:${day}:${slot}`;
+          if (sectionSlots.has(sectionKey)) continue;
+          const subject = candidateSubjects[subjectIndex % candidateSubjects.length];
+          subjectIndex++;
+          const staffCandidates = subjectStaffMap.get(subject.id) || data.staff.filter(st => st.department_id === section.department_id);
+          const roomPool = (subject.subject_type === 'lab' || subject.subject_type === 'practical') ? roomsByType.lab : roomsByType.any;
+          if (staffCandidates.length === 0 || roomPool.length === 0) continue;
+          let placed = false;
+          for (const staff of staffCandidates) {
+            if (placed) break;
+            const staffKey = `${staff.id}:${day}:${slot}`;
+            if (staffSlots.has(staffKey)) continue;
+            for (const room of roomPool) {
+              if (placed) break;
+              const roomKey = `${room.id}:${day}:${slot}`;
+              if (roomSlots.has(roomKey)) continue;
+              const newEntry: TimetableEntry = {
+                section_id: section.id,
+                subject_id: subject.id,
+                staff_id: staff.id,
+                room_id: room.id,
+                day_of_week: day,
+                time_slot: slot,
+                semester: selectedSemester
+              };
+              result.push(newEntry);
+              staffSlots.add(staffKey);
+              roomSlots.add(roomKey);
+              sectionSlots.add(sectionKey);
+              needed--;
+              placed = true;
+              console.log(`Added filler (min 3/day) Section ${section.name} Day ${day} Slot ${slot}`);
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   private async saveTimetable(entries: TimetableEntry[]): Promise<void> {
     console.log(`Attempting to save ${entries.length} timetable entries...`);
     
@@ -592,7 +793,11 @@ For subjects needing both theory and lab: create separate entries with different
 
 // Simple algorithm-based fallback generator
 export class SimpleTimetableGenerator {
-  async generateTimetable(selectedDepartments: string[], selectedSemester: number): Promise<{
+  async generateTimetable(
+    selectedDepartments: string[], 
+    selectedSemester: number, 
+    options?: AdvancedGenerationOptions
+  ): Promise<{
     success: boolean;
     message: string;
     entriesCount?: number;
@@ -602,7 +807,7 @@ export class SimpleTimetableGenerator {
       console.log('Starting simple algorithm-based timetable generation...');
       
       // Fetch data
-      const data = await this.fetchData(selectedDepartments, selectedSemester);
+      const data = await this.fetchData(selectedDepartments, selectedSemester, options);
       
       // Clear existing timetables
       await this.clearExistingTimetables(data.sections.map(s => s.id));
@@ -631,12 +836,84 @@ export class SimpleTimetableGenerator {
     }
   }
 
-  private async fetchData(selectedDepartments: string[], selectedSemester: number): Promise<GenerationData> {
+  private async fetchData(
+    selectedDepartments: string[], 
+    selectedSemester: number,
+    options?: AdvancedGenerationOptions
+  ): Promise<GenerationData> {
+    // Department fetch
+    let departmentsPromise;
+    if (selectedDepartments.length > 0) {
+      departmentsPromise = supabase.from('departments').select('*').in('id', selectedDepartments);
+    } else {
+      departmentsPromise = supabase.from('departments').select('*');
+    }
+    
+    // Section fetch
+    let sectionsPromise;
+    if (options?.sections && options.sections.length > 0) {
+      // If specific sections are selected in advanced mode
+      sectionsPromise = supabase.from('sections')
+        .select('*')
+        .in('id', options.sections)
+        .eq('semester', selectedSemester);
+    } else if (selectedDepartments.length > 0) {
+      // Standard mode department filtering
+      sectionsPromise = supabase.from('sections')
+        .select('*')
+        .in('department_id', selectedDepartments)
+        .eq('semester', selectedSemester);
+    } else {
+      // Fallback to all sections for this semester
+      sectionsPromise = supabase.from('sections')
+        .select('*')
+        .eq('semester', selectedSemester);
+    }
+    
+    // Subject fetch
+    let subjectsPromise;
+    if (options?.subjects && options.subjects.length > 0) {
+      // If specific subjects are selected in advanced mode
+      subjectsPromise = supabase.from('subjects')
+        .select('*')
+        .in('id', options.subjects)
+        .eq('semester', selectedSemester);
+    } else if (selectedDepartments.length > 0) {
+      // Standard mode department filtering
+      subjectsPromise = supabase.from('subjects')
+        .select('*')
+        .in('department_id', selectedDepartments)
+        .eq('semester', selectedSemester);
+    } else {
+      // Fallback to all subjects for this semester
+      subjectsPromise = supabase.from('subjects')
+        .select('*')
+        .eq('semester', selectedSemester);
+    }
+    
+    // Staff fetch
+    let staffPromise;
+    if (options?.staff && options.staff.length > 0) {
+      // If specific staff are selected in advanced mode
+      staffPromise = supabase.from('staff')
+        .select('*')
+        .in('id', options.staff);
+    } else if (selectedDepartments.length > 0) {
+      // Standard mode department filtering
+      staffPromise = supabase.from('staff')
+        .select('*')
+        .in('department_id', selectedDepartments);
+    } else {
+      // Fallback to all staff
+      staffPromise = supabase.from('staff')
+        .select('*');
+    }
+
     const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
-      supabase.from('departments').select('*').in('id', selectedDepartments),
-      supabase.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
-      supabase.from('subjects').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
-      supabase.from('staff').select('*').in('department_id', selectedDepartments),
+      departmentsPromise,
+      sectionsPromise,
+      subjectsPromise,
+      staffPromise,
       supabase.from('rooms').select('*'),
       supabase.from('college_timings').select('*').order('day_of_week'),
       supabase.from('staff_subjects').select('staff_id, subject_id')

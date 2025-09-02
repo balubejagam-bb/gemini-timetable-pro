@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Upload, Building, Plus, Edit, Trash2, Search, Save, X } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -20,16 +21,17 @@ interface Room {
 }
 
 export default function Rooms() {
+  const { toast } = useToast();
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
-  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState("all");
   const [filterBuilding, setFilterBuilding] = useState("all");
-  const { toast } = useToast();
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
-  const roomTypes = ["classroom", "lab", "auditorium"];
+  const roomTypes = ["classroom", "lab", "lecture_hall", "seminar", "auditorium", "other"];
 
   const fetchRooms = useCallback(async () => {
     try {
@@ -144,7 +146,7 @@ export default function Rooms() {
       setLoading(false);
     }
   };
-
+  
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -201,6 +203,32 @@ export default function Rooms() {
     return matchesSearch && matchesType && matchesBuilding;
   });
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const allFilteredSelected = filteredRooms.length > 0 && filteredRooms.every(r => selectedIds.has(r.id));
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected room(s)? This cannot be undone.`)) return;
+    try {
+      setLoading(true);
+      const ids = Array.from(selectedIds);
+      const { error } = await supabase.from('rooms').delete().in('id', ids);
+      if (error) throw error;
+      toast({ title: 'Deleted', description: `${ids.length} rooms removed.` });
+      setSelectedIds(new Set());
+      fetchRooms();
+    } catch (e) {
+      console.error('Bulk delete rooms error', e);
+      toast({ title: 'Error', description: 'Failed bulk delete', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page Header */}
@@ -212,6 +240,27 @@ export default function Rooms() {
           </p>
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            className="gap-2"
+            onClick={() => {
+              const csvContent =
+                'room_number,capacity,room_type,building,floor\n' +
+                'A101,40,classroom,Main,1\n' +
+                'Lab1,30,lab,Tech,2\n';
+              const blob = new Blob([csvContent], { type: 'text/csv' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'rooms_sample.csv';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download Rooms Sample CSV
+          </Button>
           <div className="relative">
             <input
               type="file"
@@ -245,6 +294,11 @@ export default function Rooms() {
               />
             </DialogContent>
           </Dialog>
+          {selectedIds.size > 0 && (
+            <Button variant="secondary" size="sm" onClick={handleBulkDelete} className="gap-2">
+              <Trash2 className="w-4 h-4" /> Delete Selected ({selectedIds.size})
+            </Button>
+          )}
         </div>
       </div>
 
@@ -286,6 +340,22 @@ export default function Rooms() {
           </SelectContent>
         </Select>
       </div>
+      {filteredRooms.length > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={() => {
+            if (allFilteredSelected) {
+              setSelectedIds(new Set());
+            } else {
+              setSelectedIds(new Set(filteredRooms.map(r => r.id)));
+            }
+          }}
+        >
+          {allFilteredSelected ? 'Clear Selection' : 'Select All Shown'}
+        </Button>
+      )}
 
       {/* Rooms Display */}
       <Card>
@@ -311,51 +381,40 @@ export default function Rooms() {
             </div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredRooms.map((room) => (
-                <Card key={room.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="flex-1">
-                        <h3 className="font-semibold text-lg">{room.room_number}</h3>
-                        {room.building && (
-                          <p className="text-sm text-muted-foreground">
-                            {room.building}{room.floor ? ` - Floor ${room.floor}` : ''}
-                          </p>
-                        )}
-                        <p className="text-sm text-muted-foreground">
-                          Capacity: {room.capacity} students
-                        </p>
+              {filteredRooms.map((room) => {
+                const checked = selectedIds.has(room.id);
+                return (
+                  <Card key={room.id} className={`hover:shadow-md transition-shadow ${checked ? 'ring-2 ring-primary/40' : ''}`}>
+                    <CardContent className="p-4">
+                      <div className="flex justify-between items-start mb-3 gap-2">
+                        <div className="flex items-start gap-2 flex-1">
+                          <Checkbox checked={checked} onCheckedChange={() => toggleSelect(room.id)} />
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-lg">{room.room_number}</h3>
+                            {room.building && (
+                              <p className="text-sm text-muted-foreground">{room.building}{room.floor ? ` - Floor ${room.floor}` : ''}</p>
+                            )}
+                            <p className="text-sm text-muted-foreground">Capacity: {room.capacity} students</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setEditingRoom(room)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteRoom(room.id)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setEditingRoom(room)}
-                        >
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteRoom(room.id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                      <div className="flex gap-2 flex-wrap">
+                        <Badge variant={room.room_type === 'classroom' ? 'default' : room.room_type === 'lab' ? 'secondary' : 'outline'} className="text-xs">
+                          {room.room_type.charAt(0).toUpperCase() + room.room_type.slice(1)}
+                        </Badge>
                       </div>
-                    </div>
-                    
-                    <div className="flex gap-2 flex-wrap">
-                      <Badge 
-                        variant={room.room_type === 'classroom' ? 'default' : 
-                                room.room_type === 'lab' ? 'secondary' : 'outline'}
-                        className="text-xs"
-                      >
-                        {room.room_type.charAt(0).toUpperCase() + room.room_type.slice(1)}
-                      </Badge>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </CardContent>

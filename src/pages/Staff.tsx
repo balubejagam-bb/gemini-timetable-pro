@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Upload, UserCheck, Plus, Edit, Trash2, Search, Phone, Mail, Save, X } from "lucide-react";
@@ -61,6 +61,7 @@ export default function Staff() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterDepartment, setFilterDepartment] = useState("all");
   const { toast } = useToast();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const availabilityOptions = [
     "Monday 9:00-10:00", "Monday 10:00-11:00", "Monday 11:30-12:30", "Monday 12:30-1:30",
@@ -289,49 +290,76 @@ export default function Staff() {
 
     try {
       const text = await file.text();
-      const lines = text.split('\n');
-      const headers = lines[0].split(',').map(h => h.trim());
-      
-      const staffData = lines.slice(1)
-        .filter(line => line.trim())
-        .map(line => {
-          const values = line.split(',').map(v => v.trim());
-          return {
-            name: values[0] || '',
-            email: values[1] || '',
-            phone: values[2] || '',
-            department_id: values[3] || departments[0]?.id || '',
-            designation: values[4] || '',
-            max_hours_per_week: parseInt(values[5]) || 20
-          };
-        });
+      const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'));
+      if (lines.length <= 1) {
+        toast({ title: 'Import Error', description: 'CSV appears empty', variant: 'destructive' });
+        return;
+      }
+      const header = lines[0].toLowerCase();
+      const isHeader = header.includes('name') && header.includes('department');
+      const dataLines = isHeader ? lines.slice(1) : lines;
 
-      // Insert all staff members with error handling
-      const results = await Promise.allSettled(
-        staffData.map(staff => supabase.from('staff').insert(staff))
-      );
-      
-      const successful = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected');
-      
-      if (failed.length > 0) {
-        console.error('Failed insertions:', failed);
-        throw new Error(`${failed.length} insertions failed`);
+      // Department lookup maps
+      const byId = new Map<string, Department>();
+      const byName = new Map<string, Department>();
+      const byCode = new Map<string, Department>();
+      departments.forEach(d => { byId.set(d.id, d); byName.set(d.name.toLowerCase(), d); byCode.set(d.code.toLowerCase(), d); });
+
+  interface Row { name: string; email?: string; phone?: string; department_id: string; designation: string; max_hours_per_week: number; }
+      interface RowResult { raw: string; row?: Row; reason?: string; }
+      const valid: Row[] = [];
+      const invalid: RowResult[] = [];
+      const seenEmails = new Set<string>();
+
+      for (const raw of dataLines) {
+        const cols = raw.split(',').map(c => c.trim());
+  const [name, email, phone, deptToken, designationRaw, maxStr] = cols;
+        if (!name) { invalid.push({ raw, reason: 'Missing name' }); continue; }
+        let dept: Department | undefined = undefined;
+        if (deptToken) dept = byId.get(deptToken) || byCode.get(deptToken.toLowerCase()) || byName.get(deptToken.toLowerCase());
+        if (!dept) dept = departments[0];
+        if (!dept) { invalid.push({ raw, reason: 'Unknown department' }); continue; }
+        const max = parseInt(maxStr || '20', 10) || 20;
+        if (email) {
+          const emailLower = email.toLowerCase();
+          if (seenEmails.has(emailLower)) { invalid.push({ raw, reason: 'Duplicate email in file' }); continue; }
+          seenEmails.add(emailLower);
+        }
+  const designation = (designationRaw && designationRaw.length) ? designationRaw : 'Faculty';
+  valid.push({ name, email, phone, department_id: dept.id, designation, max_hours_per_week: max });
       }
 
+      if (!valid.length) {
+        toast({ title: 'Import Error', description: `No valid rows. ${invalid.length} invalid.`, variant: 'destructive' });
+        return;
+      }
+
+      // Upsert by email when available, else plain insert
+      let inserted = 0; let failed = 0; let firstError: string | null = null;
+      for (const row of valid) {
+        if (row.email) {
+          const { error } = await supabase.from('staff').upsert(row, { onConflict: 'email', ignoreDuplicates: true });
+          if (error) { failed++; if (!firstError) firstError = error.message; } else { inserted++; }
+        } else {
+          const { error } = await supabase.from('staff').insert(row);
+          if (error) { failed++; if (!firstError) firstError = error.message; } else { inserted++; }
+        }
+      }
+
+      const summary: string[] = [];
+      if (invalid.length) summary.push(`Invalid: ${invalid.length}`);
+      if (failed) summary.push(`Failed: ${failed}`);
+      if (firstError) summary.push(`First error: ${firstError}`);
       toast({
-        title: "Success",
-        description: `${staffData.length} staff members imported successfully`
+        title: failed || invalid.length ? 'Partial Import' : 'Import Complete',
+        description: `Imported ~${inserted} of ${valid.length} rows. ${summary.join(' | ') || 'All good.'}`.slice(0,300)
       });
-      
       fetchStaff();
-    } catch (error) {
-      console.error('Error importing staff:', error);
-      toast({
-        title: "Error",
-        description: "Failed to import staff data",
-        variant: "destructive"
-      });
+    } catch (e) {
+      console.error('Error importing staff:', e);
+      toast({ title: 'Error', description: 'Failed to import staff data', variant: 'destructive' });
+    } finally {
+      event.target.value = '';
     }
   };
 
@@ -343,17 +371,43 @@ export default function Staff() {
     return matchesSearch && matchesDepartment;
   });
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const allFilteredSelected = filteredStaff.length > 0 && filteredStaff.every(m => selectedIds.has(m.id));
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected staff member(s)? This cannot be undone.`)) return;
+    try {
+      setLoading(true);
+      const ids = Array.from(selectedIds);
+      const { error } = await supabase.from('staff').delete().in('id', ids);
+      if (error) throw error;
+      toast({ title: 'Deleted', description: `${ids.length} staff removed.` });
+      setSelectedIds(new Set());
+      fetchStaff();
+    } catch (e) {
+      console.error('Bulk delete staff error', e);
+      toast({ title: 'Error', description: 'Failed bulk delete', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Staff Management</h1>
-          <p className="text-muted-foreground">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Staff Management</h1>
+          <p className="text-muted-foreground text-sm sm:text-base">
             Manage faculty members, their schedules and availability
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <div className="relative">
             <input
               type="file"
@@ -362,16 +416,37 @@ export default function Staff() {
               className="hidden"
               id="staff-upload"
             />
-            <Button variant="outline" asChild className="gap-2">
-              <label htmlFor="staff-upload" className="cursor-pointer">
+            <Button variant="outline" size="sm" asChild>
+              <label htmlFor="staff-upload" className="cursor-pointer flex items-center gap-2">
                 <Upload className="w-4 h-4" />
                 Import CSV
               </label>
             </Button>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const csvContent =
+                'name,email,phone,department,designation,max_hours_per_week\n' +
+                'Dr. Kiran Singh,kiran.singh@mbu.edu.in,9876543210,CSE,Professor,20\n' +
+                '# department accepts id, code, or name; lines starting with # are ignored';
+              const blob = new Blob([csvContent], { type: 'text/csv' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'staff_import_template.csv';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download Sample CSV
+          </Button>
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
-              <Button className="gap-2">
+              <Button size="sm" className="gap-2">
                 <Plus className="w-4 h-4" />
                 Add Staff
               </Button>
@@ -379,6 +454,7 @@ export default function Staff() {
             <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Add New Staff Member</DialogTitle>
+                <DialogDescription>Enter staff details to create a new record.</DialogDescription>
               </DialogHeader>
               <StaffForm 
                 departments={departments}
@@ -390,11 +466,16 @@ export default function Staff() {
               />
             </DialogContent>
           </Dialog>
+          {selectedIds.size > 0 && (
+            <Button variant="secondary" size="sm" onClick={handleBulkDelete} className="gap-2">
+              <Trash2 className="w-4 h-4" /> Delete Selected ({selectedIds.size})
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Search and Filter */}
-      <div className="flex gap-4">
+      <div className="flex flex-col sm:flex-row gap-4">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           <Input
@@ -405,7 +486,7 @@ export default function Staff() {
           />
         </div>
         <Select value={filterDepartment} onValueChange={setFilterDepartment}>
-          <SelectTrigger className="w-48">
+          <SelectTrigger className="w-full sm:w-48">
             <SelectValue placeholder="Filter by Department" />
           </SelectTrigger>
           <SelectContent>
@@ -418,6 +499,22 @@ export default function Staff() {
           </SelectContent>
         </Select>
       </div>
+      {filteredStaff.length > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={() => {
+            if (allFilteredSelected) {
+              setSelectedIds(new Set());
+            } else {
+              setSelectedIds(new Set(filteredStaff.map(s => s.id)));
+            }
+          }}
+        >
+          {allFilteredSelected ? 'Clear Selection' : 'Select All Shown'}
+        </Button>
+      )}
 
       {/* Staff List */}
       <Card>
@@ -443,69 +540,57 @@ export default function Staff() {
             </div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredStaff.map((member) => (
-                <Card key={member.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <h3 className="font-semibold">{member.name}</h3>
-                        <p className="text-sm text-muted-foreground">{member.designation}</p>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setEditingStaff(member)}
-                        >
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteStaff(member.id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </div>
-                    
-                    <Badge variant="outline" className="mb-2">
-                      {member.departments?.code}
-                    </Badge>
-                    
-                    <div className="space-y-1 text-sm">
-                      {member.email && (
-                        <div className="flex items-center gap-2">
-                          <Mail className="w-3 h-3" />
-                          <span className="truncate">{member.email}</span>
-                        </div>
-                      )}
-                      {member.phone && (
-                        <div className="flex items-center gap-2">
-                          <Phone className="w-3 h-3" />
-                          <span>{member.phone}</span>
-                        </div>
-                      )}
-                      <div className="text-xs text-muted-foreground">
-                        Max Hours: {member.max_hours_per_week}/week
-                      </div>
-                      {member.availability && member.availability.length > 0 && (
-                        <div className="text-xs text-muted-foreground">
-                          Available: {member.availability.length} slots
-                        </div>
-                      )}
-                      {(() => {
-                        const assignedSubjects = staffSubjects.filter(ss => ss.staff_id === member.id);
-                        return assignedSubjects.length > 0 && (
-                          <div className="text-xs text-green-600">
-                            Teaching: {assignedSubjects.length} subject{assignedSubjects.length > 1 ? 's' : ''}
+              {filteredStaff.map((member) => {
+                const checked = selectedIds.has(member.id);
+                return (
+                  <Card key={member.id} className={`hover:shadow-md transition-shadow ${checked ? 'ring-2 ring-primary/40' : ''}`}>
+                    <CardContent className="p-4">
+                      <div className="flex justify-between items-start mb-2 gap-2">
+                        <div className="flex items-start gap-2 flex-1">
+                          <Checkbox checked={checked} onCheckedChange={() => toggleSelect(member.id)} />
+                          <div>
+                            <h3 className="font-semibold">{member.name}</h3>
+                            <p className="text-sm text-muted-foreground">{member.designation}</p>
                           </div>
-                        );
-                      })()}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                        </div>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setEditingStaff(member)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteStaff(member.id)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                      <Badge variant="outline" className="mb-2">{member.departments?.code}</Badge>
+                      <div className="space-y-1 text-sm">
+                        {member.email && (
+                          <div className="flex items-center gap-2">
+                            <Mail className="w-3 h-3" />
+                            <span className="truncate">{member.email}</span>
+                          </div>
+                        )}
+                        {member.phone && (
+                          <div className="flex items-center gap-2">
+                            <Phone className="w-3 h-3" />
+                            <span>{member.phone}</span>
+                          </div>
+                        )}
+                        <div className="text-xs text-muted-foreground">Max Hours: {member.max_hours_per_week}/week</div>
+                        {member.availability && member.availability.length > 0 && (
+                          <div className="text-xs text-muted-foreground">Available: {member.availability.length} slots</div>
+                        )}
+                        {(() => {
+                          const assignedSubjects = staffSubjects.filter(ss => ss.staff_id === member.id);
+                          return assignedSubjects.length > 0 && (
+                            <div className="text-xs text-green-600">Teaching: {assignedSubjects.length} subject{assignedSubjects.length > 1 ? 's' : ''}</div>
+                          );
+                        })()}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </CardContent>
@@ -517,6 +602,7 @@ export default function Staff() {
           <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Edit Staff Member</DialogTitle>
+              <DialogDescription>Update staff information and save changes.</DialogDescription>
             </DialogHeader>
             <StaffForm 
               staff={editingStaff}
@@ -568,6 +654,25 @@ function StaffForm({
     availability: staff?.availability || [],
     selectedSubjects: staff ? staffSubjects.filter(ss => ss.staff_id === staff.id).map(ss => ss.subject_id) : []
   });
+
+  // Select All logic for availability
+  const allAvailabilitySelected = formData.availability.length === availabilityOptions.length;
+  const handleSelectAllAvailability = (checked: boolean) => {
+    setFormData(prev => ({
+      ...prev,
+      availability: checked ? [...availabilityOptions] : []
+    }));
+  };
+
+  // Select All logic for subjects
+  const allSubjects = subjects.map(s => s.id);
+  const allSubjectsSelected = formData.selectedSubjects.length === allSubjects.length;
+  const handleSelectAllSubjects = (checked: boolean) => {
+    setFormData(prev => ({
+      ...prev,
+      selectedSubjects: checked ? [...allSubjects] : []
+    }));
+  };
 
   const [newSpecialization, setNewSpecialization] = useState('');
 
@@ -680,6 +785,14 @@ function StaffForm({
 
       <div>
         <Label>Subject Assignments</Label>
+        <div className="flex items-center mb-2">
+          <Checkbox
+            id="select-all-subjects"
+            checked={allSubjectsSelected}
+            onCheckedChange={(checked) => handleSelectAllSubjects(checked as boolean)}
+          />
+          <Label htmlFor="select-all-subjects" className="ml-2 text-sm cursor-pointer">Select All Subjects</Label>
+        </div>
         <div className="space-y-4 mt-2 max-h-64 overflow-y-auto border rounded p-4">
           {Object.entries(subjectsByDepartment).map(([deptName, deptSubjects]) => (
             <div key={deptName}>
@@ -716,6 +829,14 @@ function StaffForm({
 
       <div>
         <Label>Staff Availability (Monday - Friday)</Label>
+        <div className="flex items-center mb-2">
+          <Checkbox
+            id="select-all-availability"
+            checked={allAvailabilitySelected}
+            onCheckedChange={(checked) => handleSelectAllAvailability(checked as boolean)}
+          />
+          <Label htmlFor="select-all-availability" className="ml-2 text-sm cursor-pointer">Select All Slots</Label>
+        </div>
         <div className="grid grid-cols-2 gap-2 mt-2 max-h-48 overflow-y-auto border rounded p-3">
           {availabilityOptions.map(slot => (
             <div key={slot} className="flex items-center space-x-2">

@@ -4,9 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Upload, BookOpen, Plus, Edit, Trash2, Search, Save, X } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -36,6 +37,7 @@ interface SubjectDepartment {
 interface Department {
   id: string;
   name: string;
+  code?: string; // include code for CSV mapping
 }
 
 export default function Subjects() {
@@ -50,6 +52,7 @@ export default function Subjects() {
   const [filterSemester, setFilterSemester] = useState("all");
   const [filterSubjectType, setFilterSubjectType] = useState("all");
   const { toast } = useToast();
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const semesters = [1, 2, 3, 4, 5, 6, 7, 8];
   const subjectTypes = ["theory", "lab", "practical", "project"];
@@ -85,7 +88,7 @@ export default function Subjects() {
     try {
       const { data, error } = await supabase
         .from('departments')
-        .select('id, name')
+        .select('id, name, code')
         .order('name');
 
       if (error) throw error;
@@ -192,49 +195,92 @@ export default function Subjects() {
 
     try {
       const text = await file.text();
-      const lines = text.split('\n');
-      
-      const subjectData = lines.slice(1)
-        .filter(line => line.trim())
-        .map(line => {
-          const values = line.split(',').map(v => v.trim());
-          return {
-            name: values[0] || '',
-            code: values[1] || '',
-            credits: parseInt(values[2]) || 3,
-            hours_per_week: parseInt(values[3]) || 3,
-            department_id: values[4] || departments[0]?.id || '',
-            semester: parseInt(values[5]) || 1,
-            subject_type: values[6] || 'theory'
-          };
-        });
-
-      // Insert all subjects with error handling
-      const results = await Promise.allSettled(
-        subjectData.map(subject => supabase.from('subjects').insert(subject))
-      );
-      
-      const successful = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected');
-      
-      if (failed.length > 0) {
-        console.error('Failed insertions:', failed);
-        throw new Error(`${failed.length} insertions failed`);
+      const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'));
+      if (lines.length <= 1) {
+        toast({ title: 'Import Error', description: 'CSV appears empty', variant: 'destructive' });
+        return;
       }
 
-      toast({
-        title: "Success",
-        description: `${subjectData.length} subjects imported successfully`
+      // Header detection
+      const header = lines[0].toLowerCase();
+      const isHeader = header.includes('name') && header.includes('code');
+      const dataLines = isHeader ? lines.slice(1) : lines;
+
+      // Build department lookup maps
+      const byId = new Map<string, Department>();
+      const byName = new Map<string, Department>();
+      const byCode = new Map<string, Department>();
+      departments.forEach(d => {
+        byId.set(d.id, d);
+        byName.set(d.name.toLowerCase(), d);
+        if (d.code) byCode.set(d.code.toLowerCase(), d);
       });
-      
+
+      interface Row { name: string; code: string; credits: number; hours_per_week: number; department_id: string; semester: number; subject_type: string; }
+      interface RowResult { raw: string; row?: Row; reason?: string; }
+
+      const valid: Row[] = [];
+      const invalid: RowResult[] = [];
+      const seenCodes = new Set<string>();
+      const allowedTypes = new Set(['theory','lab','practical','project']);
+
+      for (const raw of dataLines) {
+        const cols = raw.split(',').map(c => c.trim());
+        if (cols.length < 2) { invalid.push({ raw, reason: 'Too few columns' }); continue; }
+        const [name, code, creditsStr, hoursStr, deptToken, semStr, typeRaw] = cols;
+        if (!name || !code) { invalid.push({ raw, reason: 'Missing name/code' }); continue; }
+        if (seenCodes.has(code)) { invalid.push({ raw, reason: 'Duplicate code in file' }); continue; }
+        seenCodes.add(code);
+        const credits = parseInt(creditsStr || '3', 10) || 3;
+        const hours = parseInt(hoursStr || '3', 10) || 3;
+        const semester = parseInt(semStr || '1', 10) || 1;
+        const type = (typeRaw || 'theory').toLowerCase();
+        const subject_type = allowedTypes.has(type) ? type : 'theory';
+
+        let dept: Department | undefined = undefined;
+        if (deptToken) {
+          dept = byId.get(deptToken) || byCode.get(deptToken.toLowerCase()) || byName.get(deptToken.toLowerCase());
+        }
+        if (!dept) dept = departments[0];
+        if (!dept) { invalid.push({ raw, reason: 'No departments available' }); continue; }
+
+        valid.push({ name, code, credits, hours_per_week: hours, department_id: dept.id, semester, subject_type });
+      }
+
+      if (!valid.length) {
+        toast({ title: 'Import Error', description: `No valid rows. ${invalid.length} invalid.`, variant: 'destructive' });
+        return;
+      }
+
+      // Upsert by code (unique on code)
+      const { error: bulkError } = await supabase.from('subjects').upsert(valid, { onConflict: 'code', ignoreDuplicates: true });
+      let inserted = valid.length;
+      let failed = 0;
+      let firstError: string | null = null;
+      if (bulkError) {
+        // fallback row-by-row
+        inserted = 0;
+        for (const row of valid) {
+          const { error: rowErr } = await supabase.from('subjects').upsert(row, { onConflict: 'code', ignoreDuplicates: true });
+          if (rowErr) { failed++; if (!firstError) firstError = rowErr.message; } else { inserted++; }
+        }
+      }
+
+      const summary: string[] = [];
+      if (invalid.length) summary.push(`Invalid: ${invalid.length}`);
+      if (failed) summary.push(`Failed: ${failed}`);
+      if (firstError) summary.push(`First error: ${firstError}`);
+
+      toast({
+        title: failed || invalid.length ? 'Partial Import' : 'Import Complete',
+        description: `Imported ~${inserted} of ${valid.length} rows. ${summary.join(' | ') || 'All good.'}`.slice(0,300)
+      });
       fetchSubjects();
-    } catch (error) {
-      console.error('Error importing subjects:', error);
-      toast({
-        title: "Error",
-        description: "Failed to import subjects data",
-        variant: "destructive"
-      });
+    } catch (e) {
+      console.error('Error importing subjects:', e);
+      toast({ title: 'Error', description: 'Failed to import subjects data', variant: 'destructive' });
+    } finally {
+      event.target.value = '';
     }
   };
 
@@ -254,17 +300,44 @@ export default function Subjects() {
     return matchesSearch && matchesDepartment && matchesSemester && matchesType;
   });
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const allFilteredSelected = filteredSubjects.length > 0 && filteredSubjects.every(s => selectedIds.has(s.id));
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} selected subject(s)? This cannot be undone.`)) return;
+    try {
+      setLoading(true);
+      const ids = Array.from(selectedIds);
+      const { error } = await supabase.from('subjects').delete().in('id', ids);
+      if (error) throw error;
+      toast({ title: 'Deleted', description: `${ids.length} subjects removed.` });
+      setSelectedIds(new Set());
+      fetchSubjects();
+    } catch (e) {
+      console.error('Bulk delete subjects error', e);
+      toast({ title: 'Error', description: 'Failed bulk delete', variant: 'destructive' });
+    } finally { setLoading(false); }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Page Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Subjects</h1>
           <p className="text-muted-foreground">
             Manage academic curriculum and course subjects
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <div className="relative">
             <input
               type="file"
@@ -273,16 +346,39 @@ export default function Subjects() {
               className="hidden"
               id="subjects-upload"
             />
-            <Button variant="outline" asChild className="gap-2">
+            <Button variant="outline" size="sm" asChild className="gap-2">
               <label htmlFor="subjects-upload" className="cursor-pointer">
                 <Upload className="w-4 h-4" />
                 Import CSV
               </label>
             </Button>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const csvContent =
+                'name,code,credits,hours_per_week,department,semester,subject_type\n' +
+                'Data Structures,CSE101,4,5,CSE,3,theory\n' +
+                'Database Management,CSE202,3,5,CSE,4,theory\n' +
+                'Operating Systems Lab,CSE303,2,6,CSE,5,lab\n' +
+                '# department accepts id, code or name; lines starting with # are ignored';
+              const blob = new Blob([csvContent], { type: 'text/csv' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'subjects_sample.csv';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download Sample CSV
+          </Button>
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
-              <Button className="gap-2">
+              <Button size="sm" className="gap-2">
                 <Plus className="w-4 h-4" />
                 Add Subject
               </Button>
@@ -290,6 +386,7 @@ export default function Subjects() {
             <DialogContent className="max-w-lg">
               <DialogHeader>
                 <DialogTitle>Add New Subject</DialogTitle>
+                <DialogDescription>Enter subject details below to create a new subject.</DialogDescription>
               </DialogHeader>
               <SubjectForm 
                 departments={departments}
@@ -301,6 +398,11 @@ export default function Subjects() {
               />
             </DialogContent>
           </Dialog>
+          {selectedIds.size > 0 && (
+            <Button variant="secondary" size="sm" onClick={handleBulkDelete} className="gap-2">
+              <Trash2 className="w-4 h-4" /> Delete Selected ({selectedIds.size})
+            </Button>
+          )}
         </div>
       </div>
 
@@ -355,6 +457,22 @@ export default function Subjects() {
           </SelectContent>
         </Select>
       </div>
+      {filteredSubjects.length > 0 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-2"
+          onClick={() => {
+            if (allFilteredSelected) {
+              setSelectedIds(new Set());
+            } else {
+              setSelectedIds(new Set(filteredSubjects.map(s => s.id)));
+            }
+          }}
+        >
+          {allFilteredSelected ? 'Clear Selection' : 'Select All Shown'}
+        </Button>
+      )}
 
       {/* Subjects Display */}
       <Card>
@@ -380,58 +498,41 @@ export default function Subjects() {
             </div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {filteredSubjects.map((subject) => (
-                <Card key={subject.id} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="flex-1">
-                        <h3 className="font-semibold text-lg">{subject.name}</h3>
-                        <p className="text-sm text-muted-foreground font-mono">
-                          {subject.code}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          {subject.department?.name}
-                        </p>
+              {filteredSubjects.map((subject) => {
+                const checked = selectedIds.has(subject.id);
+                return (
+                  <Card key={subject.id} className={`hover:shadow-md transition-shadow ${checked ? 'ring-2 ring-primary/40' : ''}`}>
+                    <CardContent className="p-4">
+                      <div className="flex justify-between items-start mb-3 gap-2">
+                        <div className="flex items-start gap-2 flex-1">
+                          <Checkbox checked={checked} onCheckedChange={() => toggleSelect(subject.id)} />
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-lg">{subject.name}</h3>
+                            <p className="text-sm text-muted-foreground font-mono">{subject.code}</p>
+                            <p className="text-sm text-muted-foreground">{subject.department?.name}</p>
+                          </div>
+                        </div>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setEditingSubject(subject)}>
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteSubject(subject.id)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setEditingSubject(subject)}
-                        >
-                          <Edit className="w-4 h-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteSubject(subject.id)}
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </Button>
+                      <div className="flex gap-2 flex-wrap">
+                        <Badge variant="outline" className="text-xs">Sem {subject.semester}</Badge>
+                        <Badge variant="secondary" className="text-xs">{subject.credits} Credits</Badge>
+                        <Badge variant="outline" className="text-xs">{subject.hours_per_week} Hrs/Week</Badge>
+                        <Badge variant={subject.subject_type === 'lab' ? 'destructive' : subject.subject_type === 'theory' ? 'default' : 'secondary'} className="text-xs">
+                          {subject.subject_type.charAt(0).toUpperCase() + subject.subject_type.slice(1)}
+                        </Badge>
                       </div>
-                    </div>
-                    
-                    <div className="flex gap-2 flex-wrap">
-                      <Badge variant="outline" className="text-xs">
-                        Sem {subject.semester}
-                      </Badge>
-                      <Badge variant="secondary" className="text-xs">
-                        {subject.credits} Credits
-                      </Badge>
-                      <Badge variant="outline" className="text-xs">
-                        {subject.hours_per_week} Hrs/Week
-                      </Badge>
-                      <Badge 
-                        variant={subject.subject_type === 'lab' ? 'destructive' : 
-                                subject.subject_type === 'theory' ? 'default' : 'secondary'} 
-                        className="text-xs"
-                      >
-                        {subject.subject_type.charAt(0).toUpperCase() + subject.subject_type.slice(1)}
-                      </Badge>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                    </CardContent>
+                  </Card>
+                );
+              })}
             </div>
           )}
         </CardContent>
@@ -443,6 +544,7 @@ export default function Subjects() {
           <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Edit Subject</DialogTitle>
+              <DialogDescription>Update the subject information and save changes.</DialogDescription>
             </DialogHeader>
             <SubjectForm 
               subject={editingSubject}
