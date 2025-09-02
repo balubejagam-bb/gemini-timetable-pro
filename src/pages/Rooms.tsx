@@ -1,232 +1,488 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Upload, MapPin, Plus, Edit, Trash2, Search } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
+import { Upload, Building, Plus, Edit, Trash2, Search, Save, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+
+interface Room {
+  id: string;
+  room_number: string;
+  capacity: number;
+  room_type: string;
+  building?: string;
+  floor?: number;
+}
 
 export default function Rooms() {
-  const [rooms] = useState([
-    { id: 1, number: "101", building: "A Block", floor: 1, capacity: 60, type: "Classroom", features: ["Projector", "AC", "Whiteboard"] },
-    { id: 2, number: "102", building: "A Block", floor: 1, capacity: 60, type: "Classroom", features: ["Projector", "AC", "Whiteboard"] },
-    { id: 3, number: "103", building: "A Block", floor: 1, capacity: 40, type: "Lab", features: ["Computers", "AC", "Network"] },
-    { id: 4, number: "201", building: "A Block", floor: 2, capacity: 80, type: "Classroom", features: ["Projector", "AC", "Audio System"] },
-    { id: 5, number: "202", building: "A Block", floor: 2, capacity: 60, type: "Classroom", features: ["Smart Board", "AC"] },
-    { id: 6, number: "203", building: "A Block", floor: 2, capacity: 30, type: "Lab", features: ["Computers", "AC", "Software"] },
-    { id: 7, number: "301", building: "A Block", floor: 3, capacity: 100, type: "Seminar Hall", features: ["Projector", "AC", "Audio System", "Stage"] },
-    { id: 8, number: "B101", building: "B Block", floor: 1, capacity: 45, type: "Classroom", features: ["Projector", "AC"] },
-    { id: 9, number: "B102", building: "B Block", floor: 1, capacity: 50, type: "Lab", features: ["Equipment", "AC", "Safety"] },
-    { id: 10, number: "B201", building: "B Block", floor: 2, capacity: 35, type: "Tutorial Room", features: ["Whiteboard", "AC"] },
-    { id: 11, number: "C101", building: "C Block", floor: 1, capacity: 120, type: "Auditorium", features: ["Stage", "Audio System", "Lighting", "AC"] },
-    { id: 12, number: "C102", building: "C Block", floor: 1, capacity: 25, type: "Conference Room", features: ["Projector", "AC", "Video Conferencing"] },
-  ]);
-
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [filterBuilding, setFilterBuilding] = useState("all");
   const { toast } = useToast();
 
-  const filteredRooms = rooms.filter(room => {
-    const matchesSearch = room.number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         room.building.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesType = filterType === "all" || room.type === filterType;
-    return matchesSearch && matchesType;
-  });
+  const roomTypes = ["classroom", "lab", "auditorium"];
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
+  const fetchRooms = useCallback(async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .order('room_number');
+
+      if (error) throw error;
+      setRooms(data || []);
+    } catch (error) {
+      console.error('Error fetching rooms:', error);
       toast({
-        title: "File Uploaded",
-        description: `${file.name} uploaded successfully. Processing rooms data...`,
+        title: "Error",
+        description: "Failed to load rooms",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    fetchRooms();
+  }, [fetchRooms]);
+
+  const handleSaveRoom = async (roomData: Omit<Room, 'id'> & { id?: string }) => {
+    try {
+      setLoading(true);
+      
+      if (roomData.id) {
+        // Update existing room
+        const { error } = await supabase
+          .from('rooms')
+          .update({
+            room_number: roomData.room_number,
+            capacity: roomData.capacity,
+            room_type: roomData.room_type,
+            building: roomData.building,
+            floor: roomData.floor
+          })
+          .eq('id', roomData.id);
+
+        if (error) throw error;
+        
+        toast({
+          title: "Success",
+          description: "Room updated successfully"
+        });
+      } else {
+        // Add new room
+        const { error } = await supabase
+          .from('rooms')
+          .insert({
+            room_number: roomData.room_number,
+            capacity: roomData.capacity,
+            room_type: roomData.room_type,
+            building: roomData.building,
+            floor: roomData.floor
+          });
+
+        if (error) throw error;
+        
+        toast({
+          title: "Success",
+          description: "Room added successfully"
+        });
+      }
+      
+      setEditingRoom(null);
+      setIsAddDialogOpen(false);
+      fetchRooms();
+    } catch (error) {
+      console.error('Error saving room:', error);
+      toast({
+        title: "Error",
+        description: "Failed to save room",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteRoom = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this room?")) return;
+    
+    try {
+      setLoading(true);
+      const { error } = await supabase
+        .from('rooms')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      
+      toast({
+        title: "Success",
+        description: "Room deleted successfully"
+      });
+      
+      fetchRooms();
+    } catch (error) {
+      console.error('Error deleting room:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete room",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const lines = text.split('\n');
+      
+      const roomData = lines.slice(1)
+        .filter(line => line.trim())
+        .map(line => {
+          const values = line.split(',').map(v => v.trim());
+          return {
+            room_number: values[0] || '',
+            capacity: parseInt(values[1]) || 30,
+            room_type: values[2] || 'classroom',
+            building: values[3] || '',
+            floor: parseInt(values[4]) || 1
+          };
+        });
+
+      // Insert all rooms
+      for (const room of roomData) {
+        await supabase.from('rooms').insert(room);
+      }
+
+      toast({
+        title: "Success",
+        description: `${roomData.length} rooms imported successfully`
+      });
+      
+      fetchRooms();
+    } catch (error) {
+      console.error('Error importing rooms:', error);
+      toast({
+        title: "Error",
+        description: "Failed to import rooms data",
+        variant: "destructive"
       });
     }
   };
 
+  // Get unique buildings for filter
+  const uniqueBuildings = [...new Set(rooms.map(room => room.building).filter(Boolean))];
+
+  const filteredRooms = rooms.filter(room => {
+    const matchesSearch = room.room_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         (room.building && room.building.toLowerCase().includes(searchTerm.toLowerCase()));
+    
+    const matchesType = filterType === "all" || room.room_type === filterType;
+    
+    const matchesBuilding = filterBuilding === "all" || room.building === filterBuilding;
+    
+    return matchesSearch && matchesType && matchesBuilding;
+  });
+
   return (
     <div className="space-y-6 animate-fade-in">
+      {/* Page Header */}
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Rooms</h1>
           <p className="text-muted-foreground">
-            Manage classrooms and facilities at Mohan Babu University
+            Manage classroom facilities and venue spaces
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" className="gap-2">
+          <div className="relative">
             <input
               type="file"
-              accept=".csv,.xlsx,.xls"
+              accept=".csv"
               onChange={handleFileUpload}
               className="hidden"
-              id="room-upload"
+              id="rooms-upload"
             />
-            <label htmlFor="room-upload" className="flex items-center gap-2 cursor-pointer">
-              <Upload className="w-4 h-4" />
-              Upload CSV/Excel
-            </label>
-          </Button>
-          <Button className="gap-2">
-            <Plus className="w-4 h-4" />
-            Add Room
-          </Button>
+            <Button variant="outline" asChild className="gap-2">
+              <label htmlFor="rooms-upload" className="cursor-pointer">
+                <Upload className="w-4 h-4" />
+                Import CSV
+              </label>
+            </Button>
+          </div>
+          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+            <DialogTrigger asChild>
+              <Button className="gap-2">
+                <Plus className="w-4 h-4" />
+                Add Room
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Add New Room</DialogTitle>
+              </DialogHeader>
+              <RoomForm 
+                roomTypes={roomTypes}
+                onSave={handleSaveRoom}
+                onCancel={() => setIsAddDialogOpen(false)}
+              />
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-4">
-        <div className="lg:col-span-3">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <MapPin className="w-5 h-5" />
-                All Rooms ({filteredRooms.length})
-              </CardTitle>
-              <CardDescription>
-                Complete list of rooms and facilities
-              </CardDescription>
-              <div className="flex gap-4">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search rooms..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10"
-                  />
-                </div>
-                <Select value={filterType} onValueChange={setFilterType}>
-                  <SelectTrigger className="w-48">
-                    <SelectValue placeholder="Filter by type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Types</SelectItem>
-                    <SelectItem value="Classroom">Classroom</SelectItem>
-                    <SelectItem value="Lab">Laboratory</SelectItem>
-                    <SelectItem value="Seminar Hall">Seminar Hall</SelectItem>
-                    <SelectItem value="Auditorium">Auditorium</SelectItem>
-                    <SelectItem value="Tutorial Room">Tutorial Room</SelectItem>
-                    <SelectItem value="Conference Room">Conference Room</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-4 md:grid-cols-2">
-                {filteredRooms.map((room) => (
-                  <div
-                    key={room.id}
-                    className="p-4 border rounded-lg hover:shadow-sm transition-shadow"
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div>
-                        <h3 className="font-semibold">Room {room.number}</h3>
+      {/* Search and Filter */}
+      <div className="flex gap-4">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search rooms..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+        <Select value={filterType} onValueChange={setFilterType}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="All Types" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Types</SelectItem>
+            {roomTypes.map(type => (
+              <SelectItem key={type} value={type}>
+                {type.charAt(0).toUpperCase() + type.slice(1)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={filterBuilding} onValueChange={setFilterBuilding}>
+          <SelectTrigger className="w-40">
+            <SelectValue placeholder="All Buildings" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Buildings</SelectItem>
+            {uniqueBuildings.map(building => (
+              <SelectItem key={building} value={building}>
+                {building}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Rooms Display */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Building className="w-5 h-5" />
+            Rooms ({filteredRooms.length})
+          </CardTitle>
+          <CardDescription>
+            Classroom facilities and venue management
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <div className="flex justify-center items-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+            </div>
+          ) : filteredRooms.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              <Building className="w-12 h-12 mx-auto mb-4 opacity-50" />
+              <p>No rooms found</p>
+              <p className="text-sm">Add rooms to get started</p>
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {filteredRooms.map((room) => (
+                <Card key={room.id} className="hover:shadow-md transition-shadow">
+                  <CardContent className="p-4">
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-lg">{room.room_number}</h3>
+                        {room.building && (
+                          <p className="text-sm text-muted-foreground">
+                            {room.building}{room.floor ? ` - Floor ${room.floor}` : ''}
+                          </p>
+                        )}
                         <p className="text-sm text-muted-foreground">
-                          {room.building} • Floor {room.floor}
+                          Capacity: {room.capacity} students
                         </p>
                       </div>
                       <div className="flex gap-1">
-                        <Button variant="ghost" size="sm">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEditingRoom(room)}
+                        >
                           <Edit className="w-4 h-4" />
                         </Button>
-                        <Button variant="ghost" size="sm">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteRoom(room.id)}
+                        >
                           <Trash2 className="w-4 h-4" />
                         </Button>
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Type:</span>
-                        <span className="font-medium">{room.type}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-muted-foreground">Capacity:</span>
-                        <span className="font-medium">{room.capacity} seats</span>
-                      </div>
-                      <div className="text-sm">
-                        <span className="text-muted-foreground">Features:</span>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {room.features.map((feature, index) => (
-                            <span
-                              key={index}
-                              className="px-2 py-1 bg-accent text-accent-foreground text-xs rounded"
-                            >
-                              {feature}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
+                    
+                    <div className="flex gap-2 flex-wrap">
+                      <Badge 
+                        variant={room.room_type === 'classroom' ? 'default' : 
+                                room.room_type === 'lab' ? 'secondary' : 'outline'}
+                        className="text-xs"
+                      >
+                        {room.room_type.charAt(0).toUpperCase() + room.room_type.slice(1)}
+                      </Badge>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
+      {/* Edit Dialog */}
+      {editingRoom && (
+        <Dialog open={!!editingRoom} onOpenChange={() => setEditingRoom(null)}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Edit Room</DialogTitle>
+            </DialogHeader>
+            <RoomForm 
+              room={editingRoom}
+              roomTypes={roomTypes}
+              onSave={handleSaveRoom}
+              onCancel={() => setEditingRoom(null)}
+            />
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+// Room Form Component
+interface RoomFormProps {
+  room?: Room;
+  roomTypes: string[];
+  onSave: (room: Omit<Room, 'id'> & { id?: string }) => void;
+  onCancel: () => void;
+}
+
+function RoomForm({ room, roomTypes, onSave, onCancel }: RoomFormProps) {
+  const [formData, setFormData] = useState({
+    id: room?.id || '',
+    room_number: room?.room_number || '',
+    capacity: room?.capacity || 30,
+    room_type: room?.room_type || 'classroom',
+    building: room?.building || '',
+    floor: room?.floor || 1
+  });
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSave(formData);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <Label htmlFor="room_number">Room Number *</Label>
+        <Input
+          id="room_number"
+          value={formData.room_number}
+          onChange={(e) => setFormData(prev => ({ ...prev, room_number: e.target.value }))}
+          placeholder="e.g., 101, LAB-A, AUDITORIUM-1"
+          required
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
         <div>
-          <Card>
-            <CardHeader>
-              <CardTitle>Add New Room</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <Label htmlFor="room-number">Room Number</Label>
-                <Input id="room-number" placeholder="e.g., 101" />
-              </div>
-              <div>
-                <Label htmlFor="building">Building</Label>
-                <Select>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select building" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="A Block">A Block</SelectItem>
-                    <SelectItem value="B Block">B Block</SelectItem>
-                    <SelectItem value="C Block">C Block</SelectItem>
-                    <SelectItem value="D Block">D Block</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="floor">Floor</Label>
-                <Select>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select floor" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="0">Ground Floor</SelectItem>
-                    <SelectItem value="1">First Floor</SelectItem>
-                    <SelectItem value="2">Second Floor</SelectItem>
-                    <SelectItem value="3">Third Floor</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label htmlFor="capacity">Capacity</Label>
-                <Input id="capacity" type="number" placeholder="e.g., 60" />
-              </div>
-              <div>
-                <Label htmlFor="room-type">Room Type</Label>
-                <Select>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Classroom">Classroom</SelectItem>
-                    <SelectItem value="Lab">Laboratory</SelectItem>
-                    <SelectItem value="Seminar Hall">Seminar Hall</SelectItem>
-                    <SelectItem value="Auditorium">Auditorium</SelectItem>
-                    <SelectItem value="Tutorial Room">Tutorial Room</SelectItem>
-                    <SelectItem value="Conference Room">Conference Room</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button className="w-full">Add Room</Button>
-            </CardContent>
-          </Card>
+          <Label htmlFor="capacity">Capacity *</Label>
+          <Input
+            id="capacity"
+            type="number"
+            min="1"
+            max="500"
+            value={formData.capacity}
+            onChange={(e) => setFormData(prev => ({ ...prev, capacity: parseInt(e.target.value) }))}
+            required
+          />
+        </div>
+        <div>
+          <Label htmlFor="room_type">Room Type *</Label>
+          <Select
+            value={formData.room_type}
+            onValueChange={(value) => setFormData(prev => ({ ...prev, room_type: value }))}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Select Type" />
+            </SelectTrigger>
+            <SelectContent>
+              {roomTypes.map(type => (
+                <SelectItem key={type} value={type}>
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
-    </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <Label htmlFor="building">Building</Label>
+          <Input
+            id="building"
+            value={formData.building}
+            onChange={(e) => setFormData(prev => ({ ...prev, building: e.target.value }))}
+            placeholder="e.g., Main Block, Engineering Block"
+          />
+        </div>
+        <div>
+          <Label htmlFor="floor">Floor</Label>
+          <Input
+            id="floor"
+            type="number"
+            min="1"
+            max="20"
+            value={formData.floor}
+            onChange={(e) => setFormData(prev => ({ ...prev, floor: parseInt(e.target.value) }))}
+          />
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" onClick={onCancel}>
+          <X className="w-4 h-4 mr-1" />
+          Cancel
+        </Button>
+        <Button type="submit">
+          <Save className="w-4 h-4 mr-1" />
+          Save Room
+        </Button>
+      </div>
+    </form>
   );
 }

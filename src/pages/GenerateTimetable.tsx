@@ -1,33 +1,77 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Sparkles, Brain, AlertTriangle, CheckCircle, Settings } from "lucide-react";
+import { Sparkles, Brain, AlertTriangle, CheckCircle, Settings, Zap, Database } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { ClientTimetableGenerator, SimpleTimetableGenerator } from "@/lib/timetableGenerator";
+import DatabaseDebug from "@/lib/databaseDebug";
+
+interface Department {
+  id: string;
+  name: string;
+  code: string;
+}
+
+interface Section {
+  id: string;
+  name: string;
+  department_id: string;
+  semester: number;
+  departments?: { name: string };
+}
+
+interface Subject {
+  id: string;
+  name: string;
+  code: string;
+  credits: number;
+  hours_per_week: number;
+  department_id: string;
+  semester: number;
+  subject_type: string;
+  departments?: { name: string };
+}
+
+interface Staff {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  designation: string;
+  department_id: string;
+  max_hours_per_week: number;
+  departments?: { name: string };
+}
+
+interface Room {
+  id: string;
+  room_number: string;
+  capacity: number;
+  room_type: string;
+  building?: string;
+  floor?: number;
+}
 
 export default function GenerateTimetable() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
   const [selectedSemester, setSelectedSemester] = useState("1");
-  const [departments, setDepartments] = useState<any[]>([]);
-  const [sections, setSections] = useState<any[]>([]);
-  const [subjects, setSubjects] = useState<any[]>([]);
-  const [staff, setStaff] = useState<any[]>([]);
-  const [rooms, setRooms] = useState<any[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [staff, setStaff] = useState<Staff[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [stats, setStats] = useState({ subjects: 0, rooms: 0, staff: 0, timeSlots: 6 });
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchAllData();
-  }, []);
-
-  const fetchAllData = async () => {
+  const fetchAllData = useCallback(async () => {
     try {
       setLoading(true);
       
@@ -71,7 +115,11 @@ export default function GenerateTimetable() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
+
+  useEffect(() => {
+    fetchAllData();
+  }, [fetchAllData]);
 
   const handleGenerate = async () => {
     if (selectedDepartments.length === 0) {
@@ -89,40 +137,144 @@ export default function GenerateTimetable() {
     try {
       setProgress(20);
       
-      console.log('Calling AI timetable generation with Gemini 1.5 Pro...');
+      console.log('Starting client-side AI timetable generation...');
       
-      const { data, error } = await supabase.functions.invoke('generate-timetable-ai', {
-        body: {
-          selectedDepartments,
-          selectedSemester: parseInt(selectedSemester)
-        }
-      });
-
+      // Try AI generation first
+      const aiGenerator = new ClientTimetableGenerator();
+      setProgress(40);
+      
+      const result = await aiGenerator.generateTimetable(selectedDepartments, parseInt(selectedSemester));
       setProgress(80);
 
-      if (error) {
-        console.error('Edge function error:', error);
-        throw new Error(error.message || 'Failed to generate timetable');
+      if (result.success) {
+        setProgress(100);
+        setIsGenerating(false);
+        
+        toast({
+          title: "Success!",
+          description: `AI-powered timetable generated successfully! Created ${result.entriesCount} entries using Gemini 1.5 Pro.`,
+        });
+        return;
       }
 
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to generate timetable');
-      }
+      // If AI fails, try simple algorithm
+      console.log('AI generation failed, trying simple algorithm...');
+      toast({
+        title: "Switching to Simple Algorithm",
+        description: "AI generation failed, using basic algorithm as fallback.",
+        variant: "default"
+      });
 
+      const simpleGenerator = new SimpleTimetableGenerator();
+      setProgress(60);
+      
+      const simpleResult = await simpleGenerator.generateTimetable(selectedDepartments, parseInt(selectedSemester));
       setProgress(100);
       setIsGenerating(false);
-      
-      toast({
-        title: "Success!",
-        description: `AI-powered timetable generated successfully! Created ${data.entriesCount} entries using ${data.model} for ${data.sectionsProcessed} sections and ${data.subjectsProcessed} subjects.`,
-      });
+
+      if (simpleResult.success) {
+        toast({
+          title: "Success!",
+          description: `Timetable generated using simple algorithm! Created ${simpleResult.entriesCount} entries.`,
+        });
+      } else {
+        throw new Error(simpleResult.error || 'Both AI and simple generation failed');
+      }
 
     } catch (error) {
       console.error('Error generating timetables:', error);
       setIsGenerating(false);
+      setProgress(0);
       toast({
         title: "Error",
-        description: `Failed to generate timetables: ${error.message}. Please try again.`,
+        description: `Failed to generate timetables: ${error.message}. Please ensure you have valid data and API keys configured.`,
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleGenerateSimple = async () => {
+    if (selectedDepartments.length === 0) {
+      toast({
+        title: "Selection Required",
+        description: "Please select at least one department to generate timetables.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsGenerating(true);
+    setProgress(0);
+
+    try {
+      setProgress(30);
+      
+      console.log('Starting simple algorithm timetable generation...');
+      
+      const simpleGenerator = new SimpleTimetableGenerator();
+      setProgress(60);
+      
+      const result = await simpleGenerator.generateTimetable(selectedDepartments, parseInt(selectedSemester));
+      setProgress(100);
+      setIsGenerating(false);
+
+      if (result.success) {
+        toast({
+          title: "Success!",
+          description: `Timetable generated using simple algorithm! Created ${result.entriesCount} entries.`,
+        });
+      } else {
+        throw new Error(result.error || 'Simple generation failed');
+      }
+
+    } catch (error) {
+      console.error('Error generating timetables:', error);
+      setIsGenerating(false);
+      setProgress(0);
+      toast({
+        title: "Error",
+        description: `Failed to generate timetables: ${error.message}. Please ensure you have valid data.`,
+        variant: "destructive"
+      });
+    }
+  };
+
+  const handleDatabaseDiagnostic = async () => {
+    try {
+      toast({
+        title: "Running Database Diagnostic",
+        description: "Checking database structure and data...",
+      });
+
+      const diagnostic = await DatabaseDebug.runFullDiagnostic();
+      
+      if (diagnostic.success) {
+        console.log('Database Diagnostic Report:', diagnostic.report);
+        
+        if (diagnostic.issues.length === 0) {
+          toast({
+            title: "Database OK!",
+            description: "No issues found. Check browser console for detailed report.",
+          });
+        } else {
+          toast({
+            title: `Found ${diagnostic.issues.length} Issue(s)`,
+            description: `Check browser console for detailed report and recommendations.`,
+            variant: "destructive"
+          });
+        }
+      } else {
+        toast({
+          title: "Diagnostic Failed",
+          description: diagnostic.report,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      toast({
+        title: "Diagnostic Error",
+        description: `Failed to run diagnostic: ${errorMessage}`,
         variant: "destructive"
       });
     }
@@ -279,13 +431,21 @@ export default function GenerateTimetable() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Brain className="w-5 h-5 text-primary" />
-                AI Features
+                Client-Side AI Features
               </CardTitle>
               <CardDescription>
-                What our AI considers when generating timetables
+                Advanced timetable generation powered by Google Gemini AI
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="w-4 h-4 text-success" />
+                <span className="text-sm">Direct API integration (no edge functions)</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <CheckCircle className="w-4 h-4 text-success" />
+                <span className="text-sm">Gemini 1.5 Pro AI model</span>
+              </div>
               <div className="flex items-center gap-3">
                 <CheckCircle className="w-4 h-4 text-success" />
                 <span className="text-sm">Conflict detection & resolution</span>
@@ -300,15 +460,7 @@ export default function GenerateTimetable() {
               </div>
               <div className="flex items-center gap-3">
                 <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Workload balancing</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Break time optimization</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Subject distribution</span>
+                <span className="text-sm">Algorithm fallback if AI fails</span>
               </div>
             </CardContent>
           </Card>
@@ -337,15 +489,39 @@ export default function GenerateTimetable() {
             </CardContent>
           </Card>
 
-          <Button 
-            onClick={handleGenerate}
-            disabled={isGenerating || needsSupabase}
-            size="lg" 
-            className="w-full gap-2 animate-glow"
-          >
-            <Sparkles className="w-4 h-4" />
-            {isGenerating ? "Generating..." : "Generate Timetables"}
-          </Button>
+          <div className="space-y-3">
+            <Button 
+              onClick={handleGenerate}
+              disabled={isGenerating || needsSupabase}
+              size="lg" 
+              className="w-full gap-2 animate-glow"
+            >
+              <Sparkles className="w-4 h-4" />
+              {isGenerating ? "Generating..." : "Generate with AI"}
+            </Button>
+            
+            <Button 
+              onClick={handleGenerateSimple}
+              disabled={isGenerating || needsSupabase}
+              size="lg" 
+              variant="outline"
+              className="w-full gap-2"
+            >
+              <Zap className="w-4 h-4" />
+              Simple Algorithm Only
+            </Button>
+            
+            <Button 
+              onClick={handleDatabaseDiagnostic}
+              disabled={isGenerating}
+              size="sm" 
+              variant="ghost"
+              className="w-full gap-2 text-muted-foreground hover:text-foreground"
+            >
+              <Database className="w-4 h-4" />
+              Debug Database Issues
+            </Button>
+          </div>
         </div>
       </div>
     </div>

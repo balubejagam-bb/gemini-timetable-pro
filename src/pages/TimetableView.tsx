@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Download, Edit3, RefreshCw, Calendar } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Download, Edit3, RefreshCw, Calendar, Grid, Eye } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -13,10 +14,13 @@ const timeSlots = [
   "11:15-12:15",
   "12:15-13:15",
   "14:00-15:00",
-  "15:00-16:00"
+  "15:00-16:00",
+  "16:00-17:00",
+  "17:00-18:00"
 ];
 
-const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// Monday to Friday only (as requested)
+const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 const subjectColors: Record<string, string> = {
   "Mathematics": "bg-blue-100 text-blue-800 border-blue-200",
@@ -26,46 +30,47 @@ const subjectColors: Record<string, string> = {
   "Computer Science": "bg-indigo-100 text-indigo-800 border-indigo-200",
   "Biology": "bg-emerald-100 text-emerald-800 border-emerald-200",
   "History": "bg-amber-100 text-amber-800 border-amber-200",
-  "Sports": "bg-red-100 text-red-800 border-red-200"
+  "Sports": "bg-red-100 text-red-800 border-red-200",
+  "default": "bg-gray-100 text-gray-800 border-gray-200"
 };
 
 interface TimetableEntry {
   id: string;
   day_of_week: number;
   time_slot: number;
-  sections: { name: string };
+  semester: number;
+  sections: { name: string; department_id: string };
   subjects: { name: string; code: string };
   staff: { name: string };
   rooms: { room_number: string };
+}
+
+interface AllTimetablesData {
+  [departmentId: string]: {
+    departmentName: string;
+    sections: {
+      [sectionId: string]: {
+        sectionName: string;
+        semester: number;
+        entries: TimetableEntry[];
+      };
+    };
+  };
 }
 
 export default function TimetableView() {
   const [selectedDepartment, setSelectedDepartment] = useState("");
   const [selectedSection, setSelectedSection] = useState("");
   const [selectedSemester, setSelectedSemester] = useState("");
-  const [departments, setDepartments] = useState<any[]>([]);
-  const [sections, setSections] = useState<any[]>([]);
+  const [viewMode, setViewMode] = useState<"single" | "all">("single");
+  const [departments, setDepartments] = useState<{id: string; name: string; code: string}[]>([]);
+  const [sections, setSections] = useState<{id: string; name: string; semester: number}[]>([]);
   const [timetableData, setTimetableData] = useState<TimetableEntry[]>([]);
+  const [allTimetablesData, setAllTimetablesData] = useState<AllTimetablesData>({});
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchDepartments();
-  }, []);
-
-  useEffect(() => {
-    if (selectedDepartment) {
-      fetchSections();
-    }
-  }, [selectedDepartment]);
-
-  useEffect(() => {
-    if (selectedSection && selectedSemester) {
-      fetchTimetable();
-    }
-  }, [selectedSection, selectedSemester]);
-
-  const fetchDepartments = async () => {
+  const fetchDepartments = useCallback(async () => {
     try {
       const { data, error } = await supabase.from('departments').select('*');
       if (error) throw error;
@@ -78,9 +83,9 @@ export default function TimetableView() {
         variant: "destructive"
       });
     }
-  };
+  }, [toast]);
 
-  const fetchSections = async () => {
+  const fetchSections = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('sections')
@@ -97,16 +102,16 @@ export default function TimetableView() {
         variant: "destructive"
       });
     }
-  };
+  }, [selectedDepartment, toast]);
 
-  const fetchTimetable = async () => {
+  const fetchTimetable = useCallback(async () => {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('timetables')
         .select(`
           *,
-          sections:section_id(name),
+          sections:section_id(name, department_id),
           subjects:subject_id(name, code),
           staff:staff_id(name),
           rooms:room_id(room_number)
@@ -126,13 +131,150 @@ export default function TimetableView() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedSection, selectedSemester, toast]);
 
-  const getTimetableEntry = (day: number, timeSlot: number) => {
-    return timetableData.find(entry => 
+  const fetchAllTimetables = useCallback(async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('timetables')
+        .select(`
+          *,
+          sections:section_id(name, department_id),
+          subjects:subject_id(name, code),
+          staff:staff_id(name),
+          rooms:room_id(room_number)
+        `);
+
+      if (error) throw error;
+
+      // Fetch departments for names
+      const { data: departmentsData } = await supabase.from('departments').select('*');
+      const departmentsMap = new Map(departmentsData?.map(d => [d.id, d.name]) || []);
+
+      // Group data by department and section
+      const groupedData: AllTimetablesData = {};
+      
+      (data as TimetableEntry[] || []).forEach(entry => {
+        const deptId = entry.sections.department_id;
+        const deptName = departmentsMap.get(deptId) || 'Unknown Department';
+        
+        if (!groupedData[deptId]) {
+          groupedData[deptId] = {
+            departmentName: deptName,
+            sections: {}
+          };
+        }
+
+        const sectionId = entry.sections.name; // Using section name as key for simplicity
+        if (!groupedData[deptId].sections[sectionId]) {
+          groupedData[deptId].sections[sectionId] = {
+            sectionName: entry.sections.name,
+            semester: entry.semester,
+            entries: []
+          };
+        }
+
+        groupedData[deptId].sections[sectionId].entries.push(entry);
+      });
+
+      setAllTimetablesData(groupedData);
+    } catch (error) {
+      console.error('Error fetching all timetables:', error);
+      toast({
+        title: "Error",
+        description: "Failed to load all timetables",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
+
+  useEffect(() => {
+    fetchDepartments();
+  }, [fetchDepartments]);
+
+  useEffect(() => {
+    if (selectedDepartment) {
+      fetchSections();
+    }
+  }, [selectedDepartment, fetchSections]);
+
+  useEffect(() => {
+    if (selectedSection && selectedSemester && viewMode === "single") {
+      fetchTimetable();
+    }
+  }, [selectedSection, selectedSemester, viewMode, fetchTimetable]);
+
+  useEffect(() => {
+    if (viewMode === "all") {
+      fetchAllTimetables();
+    }
+  }, [viewMode, fetchAllTimetables]);
+
+  const getTimetableEntry = (entries: TimetableEntry[], day: number, timeSlot: number) => {
+    return entries.find(entry => 
       entry.day_of_week === day && entry.time_slot === timeSlot
     );
   };
+
+  const renderTimetableGrid = (entries: TimetableEntry[], title: string) => (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{entries.length} entries loaded</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <div className="grid grid-cols-6 gap-2 min-w-full">
+            {/* Header */}
+            <div className="font-semibold p-3 bg-muted rounded-lg text-center">
+              Time
+            </div>
+            {days.map(day => (
+              <div key={day} className="font-semibold p-3 bg-muted rounded-lg text-center">
+                {day}
+              </div>
+            ))}
+
+            {/* Time slots and schedule */}
+            {timeSlots.map((timeSlot, index) => (
+              <div key={timeSlot} className="contents">
+                <div className="p-3 bg-muted/50 rounded-lg text-center font-medium text-sm">
+                  {timeSlot}
+                </div>
+                {days.map((day, dayIndex) => {
+                  const entry = getTimetableEntry(entries, dayIndex + 1, index + 1);
+                  
+                  if (!entry) {
+                    return (
+                      <div key={`${day}-${timeSlot}`} className="p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-sm">
+                        Free Period
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={`${day}-${timeSlot}`} className="p-3 border rounded-lg hover:shadow-sm transition-shadow">
+                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-2 text-xs`}>
+                        {entry.subjects.code}
+                      </Badge>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">{entry.subjects.name}</p>
+                        <p className="text-xs text-muted-foreground">{entry.staff.name}</p>
+                        <p className="text-xs text-muted-foreground">Room: {entry.rooms.room_number}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 
   const selectedDeptName = departments.find(d => d.id === selectedDepartment)?.name || "";
   const selectedSectionName = sections.find(s => s.id === selectedSection)?.name || "";
@@ -144,7 +286,7 @@ export default function TimetableView() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Timetable View</h1>
           <p className="text-muted-foreground">
-            View and manage generated timetables
+            View and manage generated timetables (Monday to Friday)
           </p>
         </div>
         <div className="flex gap-2">
@@ -163,146 +305,142 @@ export default function TimetableView() {
         </div>
       </div>
 
-      {/* Filters */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Calendar className="w-5 h-5" />
-            Timetable Filters
-          </CardTitle>
-          <CardDescription>
-            Select department and section to view timetable
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex gap-4">
-            <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Select Department" />
-              </SelectTrigger>
-              <SelectContent>
-                {departments.map(dept => (
-                  <SelectItem key={dept.id} value={dept.id}>
-                    {dept.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            
-            <Select 
-              value={selectedSection} 
-              onValueChange={setSelectedSection}
-              disabled={!selectedDepartment}
-            >
-              <SelectTrigger className="w-32">
-                <SelectValue placeholder="Section" />
-              </SelectTrigger>
-              <SelectContent>
-                {sections.map(section => (
-                  <SelectItem key={section.id} value={section.id}>
-                    {section.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+      {/* View Mode Selector */}
+      <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as "single" | "all")}>
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="single" className="flex items-center gap-2">
+            <Eye className="w-4 h-4" />
+            Single Timetable
+          </TabsTrigger>
+          <TabsTrigger value="all" className="flex items-center gap-2">
+            <Grid className="w-4 h-4" />
+            All Timetables
+          </TabsTrigger>
+        </TabsList>
 
-            <Select value={selectedSemester} onValueChange={setSelectedSemester}>
-              <SelectTrigger className="w-32">
-                <SelectValue placeholder="Semester" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="1">Sem 1</SelectItem>
-                <SelectItem value="2">Sem 2</SelectItem>
-                <SelectItem value="3">Sem 3</SelectItem>
-                <SelectItem value="4">Sem 4</SelectItem>
-                <SelectItem value="5">Sem 5</SelectItem>
-                <SelectItem value="6">Sem 6</SelectItem>
-                <SelectItem value="7">Sem 7</SelectItem>
-                <SelectItem value="8">Sem 8</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardContent>
-      </Card>
+        <TabsContent value="single" className="space-y-6">
+          {/* Filters for Single View */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Calendar className="w-5 h-5" />
+                Timetable Filters
+              </CardTitle>
+              <CardDescription>
+                Select department and section to view specific timetable
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="flex gap-4">
+                <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue placeholder="Select Department" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {departments.map(dept => (
+                      <SelectItem key={dept.id} value={dept.id}>
+                        {dept.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                
+                <Select 
+                  value={selectedSection} 
+                  onValueChange={setSelectedSection}
+                  disabled={!selectedDepartment}
+                >
+                  <SelectTrigger className="w-32">
+                    <SelectValue placeholder="Section" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sections.map(section => (
+                      <SelectItem key={section.id} value={section.id}>
+                        {section.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-      {/* Timetable Grid */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            {selectedDeptName && selectedSectionName ? 
-              `${selectedDeptName} - ${selectedSectionName} Timetable` : 
-              "Timetable"}
-          </CardTitle>
-          <CardDescription>
-            {selectedSemester && selectedSectionName ? 
-              `Semester ${selectedSemester} | ${timetableData.length} entries loaded` : 
-              "Select department, section and semester to view timetable"}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {loading ? (
-            <div className="flex justify-center items-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-            </div>
-          ) : !selectedSection || !selectedSemester ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <p>Please select department, section and semester to view timetable</p>
-            </div>
-          ) : timetableData.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <p>No timetable data found for the selected criteria</p>
-              <p className="text-sm mt-1">Generate a timetable first using the Generate Timetable page</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <div className="grid grid-cols-7 gap-2 min-w-full">
-                {/* Header */}
-                <div className="font-semibold p-3 bg-muted rounded-lg text-center">
-                  Time
-                </div>
-                {days.map(day => (
-                  <div key={day} className="font-semibold p-3 bg-muted rounded-lg text-center">
-                    {day}
-                  </div>
-                ))}
-
-                {/* Time slots and schedule */}
-                {timeSlots.map((timeSlot, index) => (
-                  <div key={timeSlot} className="contents">
-                    <div className="p-3 bg-muted/50 rounded-lg text-center font-medium text-sm">
-                      {timeSlot}
-                    </div>
-                    {days.map((day, dayIndex) => {
-                      const entry = getTimetableEntry(dayIndex + 1, index + 1);
-                      
-                      if (!entry) {
-                        return (
-                          <div key={`${day}-${timeSlot}`} className="p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-sm">
-                            Free
-                          </div>
-                        );
-                      }
-
-                      return (
-                        <div key={`${day}-${timeSlot}`} className="p-3 border rounded-lg hover:shadow-sm transition-shadow">
-                          <Badge className={`${subjectColors[entry.subjects.name] || "bg-gray-100 text-gray-800"} mb-2 text-xs`}>
-                            {entry.subjects.code}
-                          </Badge>
-                          <div className="space-y-1">
-                            <p className="text-sm font-medium">{entry.subjects.name}</p>
-                            <p className="text-xs text-muted-foreground">{entry.staff.name}</p>
-                            <p className="text-xs text-muted-foreground">Room: {entry.rooms.room_number}</p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
+                <Select value={selectedSemester} onValueChange={setSelectedSemester}>
+                  <SelectTrigger className="w-32">
+                    <SelectValue placeholder="Semester" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">Sem 1</SelectItem>
+                    <SelectItem value="2">Sem 2</SelectItem>
+                    <SelectItem value="3">Sem 3</SelectItem>
+                    <SelectItem value="4">Sem 4</SelectItem>
+                    <SelectItem value="5">Sem 5</SelectItem>
+                    <SelectItem value="6">Sem 6</SelectItem>
+                    <SelectItem value="7">Sem 7</SelectItem>
+                    <SelectItem value="8">Sem 8</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Single Timetable Display */}
+          {loading ? (
+            <Card>
+              <CardContent className="flex justify-center items-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              </CardContent>
+            </Card>
+          ) : !selectedSection || !selectedSemester ? (
+            <Card>
+              <CardContent className="text-center py-8 text-muted-foreground">
+                <p>Please select department, section and semester to view timetable</p>
+              </CardContent>
+            </Card>
+          ) : timetableData.length === 0 ? (
+            <Card>
+              <CardContent className="text-center py-8 text-muted-foreground">
+                <p>No timetable data found for the selected criteria</p>
+                <p className="text-sm mt-1">Generate a timetable first using the Generate Timetable page</p>
+              </CardContent>
+            </Card>
+          ) : (
+            renderTimetableGrid(
+              timetableData,
+              `${selectedDeptName} - ${selectedSectionName} Timetable (Semester ${selectedSemester})`
+            )
+          )}
+        </TabsContent>
+
+        <TabsContent value="all" className="space-y-6">
+          {/* All Timetables Display */}
+          {loading ? (
+            <Card>
+              <CardContent className="flex justify-center items-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+              </CardContent>
+            </Card>
+          ) : Object.keys(allTimetablesData).length === 0 ? (
+            <Card>
+              <CardContent className="text-center py-8 text-muted-foreground">
+                <p>No timetable data found</p>
+                <p className="text-sm mt-1">Generate timetables first using the Generate Timetable page</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-8">
+              {Object.entries(allTimetablesData).map(([deptId, department]) => (
+                <div key={deptId}>
+                  <h2 className="text-2xl font-bold mb-4">{department.departmentName}</h2>
+                  {Object.entries(department.sections).map(([sectionKey, section]) => (
+                    renderTimetableGrid(
+                      section.entries,
+                      `${section.sectionName} - Semester ${section.semester}`
+                    )
+                  ))}
+                </div>
+              ))}
             </div>
           )}
-        </CardContent>
-      </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
