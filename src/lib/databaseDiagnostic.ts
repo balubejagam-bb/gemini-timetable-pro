@@ -22,7 +22,7 @@ export class DatabaseDiagnostic {
         
         try {
           const { data, error, count } = await supabase
-            .from(tableName)
+            .from(tableName as any)
             .select('*', { count: 'exact' })
             .limit(1);
 
@@ -99,7 +99,7 @@ export class DatabaseDiagnostic {
 
       for (const check of essentialChecks) {
         const { count } = await supabase
-          .from(check.table)
+          .from(check.table as any)
           .select('*', { count: 'exact' })
           .limit(0);
         

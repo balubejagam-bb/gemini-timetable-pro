@@ -21,8 +21,6 @@ interface StaffMember {
   designation?: string;
   max_hours_per_week: number;
   availability?: string[];
-  specializations?: string[];
-  can_teach_across_departments: boolean;
   departments?: {
     name: string;
     code: string;
@@ -90,14 +88,7 @@ export default function Staff() {
 
       if (error) throw error;
       
-      // Set default values for new fields if they don't exist
-      const staffWithDefaults = (data || []).map(member => ({
-        ...member,
-        specializations: member.specializations || [],
-        can_teach_across_departments: member.can_teach_across_departments || false
-      }));
-      
-      setStaff(staffWithDefaults);
+      setStaff(data || []);
     } catch (error) {
       console.error('Error fetching staff:', error);
       toast({
@@ -192,9 +183,7 @@ export default function Staff() {
         department_id: staffData.department_id,
         designation: staffData.designation,
         max_hours_per_week: staffData.max_hours_per_week,
-        availability: staffData.availability,
-        specializations: staffData.specializations || [],
-        can_teach_across_departments: staffData.can_teach_across_departments || false
+        availability: staffData.availability
       };
 
       let staffId = staffData.id;
@@ -313,8 +302,7 @@ export default function Staff() {
             phone: values[2] || '',
             department_id: values[3] || departments[0]?.id || '',
             designation: values[4] || '',
-            max_hours_per_week: parseInt(values[5]) || 40,
-            availability: values[6] ? values[6].split(';') : []
+            max_hours_per_week: parseInt(values[5]) || 20
           };
         });
 
@@ -498,16 +486,6 @@ export default function Staff() {
                           Available: {member.availability.length} slots
                         </div>
                       )}
-                      {member.can_teach_across_departments && (
-                        <div className="text-xs text-blue-600">
-                          ✓ Can teach across departments
-                        </div>
-                      )}
-                      {member.specializations && member.specializations.length > 0 && (
-                        <div className="text-xs text-muted-foreground">
-                          Specializations: {member.specializations.slice(0, 2).join(', ')}{member.specializations.length > 2 ? '...' : ''}
-                        </div>
-                      )}
                       {(() => {
                         const assignedSubjects = staffSubjects.filter(ss => ss.staff_id === member.id);
                         return assignedSubjects.length > 0 && (
@@ -580,8 +558,6 @@ function StaffForm({
     designation: staff?.designation || '',
     max_hours_per_week: staff?.max_hours_per_week || 40,
     availability: staff?.availability || [],
-    specializations: staff?.specializations || [],
-    can_teach_across_departments: staff?.can_teach_across_departments || false,
     selectedSubjects: staff ? staffSubjects.filter(ss => ss.staff_id === staff.id).map(ss => ss.subject_id) : []
   });
 
@@ -605,22 +581,6 @@ function StaffForm({
     }));
   };
 
-  const addSpecialization = () => {
-    if (newSpecialization.trim() && !formData.specializations.includes(newSpecialization.trim())) {
-      setFormData(prev => ({
-        ...prev,
-        specializations: [...prev.specializations, newSpecialization.trim()]
-      }));
-      setNewSpecialization('');
-    }
-  };
-
-  const removeSpecialization = (spec: string) => {
-    setFormData(prev => ({
-      ...prev,
-      specializations: prev.specializations.filter(s => s !== spec)
-    }));
-  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -709,54 +669,6 @@ function StaffForm({
         </div>
       </div>
 
-      <div>
-        <div className="flex items-center space-x-2 mb-2">
-          <Checkbox
-            id="cross_dept"
-            checked={formData.can_teach_across_departments}
-            onCheckedChange={(checked) => 
-              setFormData(prev => ({ ...prev, can_teach_across_departments: checked as boolean }))
-            }
-          />
-          <Label htmlFor="cross_dept">
-            Can teach subjects across departments
-          </Label>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          This allows the staff member to be assigned subjects from any department
-        </p>
-      </div>
-
-      <div>
-        <Label>Specializations/Areas of Expertise</Label>
-        <div className="space-y-2">
-          <div className="flex gap-2">
-            <Input
-              value={newSpecialization}
-              onChange={(e) => setNewSpecialization(e.target.value)}
-              placeholder="e.g., Machine Learning, Database Systems"
-              onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), addSpecialization())}
-            />
-            <Button type="button" onClick={addSpecialization} size="sm">
-              Add
-            </Button>
-          </div>
-          <div className="flex gap-2 flex-wrap">
-            {formData.specializations.map(spec => (
-              <Badge key={spec} variant="secondary" className="gap-1">
-                {spec}
-                <button
-                  type="button"
-                  onClick={() => removeSpecialization(spec)}
-                  className="ml-1 hover:text-red-500"
-                >
-                  ×
-                </button>
-              </Badge>
-            ))}
-          </div>
-        </div>
-      </div>
 
       <div>
         <Label>Subject Assignments</Label>
@@ -816,10 +728,8 @@ function StaffForm({
         <h4 className="font-semibold text-sm mb-2">Assignment Summary</h4>
         <div className="text-sm text-muted-foreground space-y-1">
           <p>• Primary Department: {departments.find(d => d.id === formData.department_id)?.name}</p>
-          <p>• Cross-Department Teaching: {formData.can_teach_across_departments ? 'Enabled' : 'Disabled'}</p>
           <p>• Subject Assignments: {formData.selectedSubjects.length} subjects</p>
           <p>• Available Time Slots: {formData.availability.length} slots</p>
-          <p>• Specializations: {formData.specializations.length} areas</p>
         </div>
       </div>
 

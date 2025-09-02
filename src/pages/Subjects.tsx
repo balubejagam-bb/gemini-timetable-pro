@@ -19,8 +19,6 @@ interface Subject {
   department_id: string;
   semester: number;
   subject_type: string;
-  is_elective: boolean;
-  min_periods_per_week: number;
   department?: {
     id: string;
     name: string;
@@ -70,14 +68,7 @@ export default function Subjects() {
 
       if (error) throw error;
       
-      // Set default values for new fields if they don't exist
-      const subjectsWithDefaults = (data || []).map(subject => ({
-        ...subject,
-        is_elective: subject.is_elective || false,
-        min_periods_per_week: subject.min_periods_per_week || Math.max(5, subject.hours_per_week || 5)
-      }));
-      
-      setSubjects(subjectsWithDefaults);
+      setSubjects(data || []);
     } catch (error) {
       console.error('Error fetching subjects:', error);
       toast({
@@ -113,20 +104,14 @@ export default function Subjects() {
     try {
       setLoading(true);
       
-      // Ensure minimum periods is at least 5 for proper timetable scheduling
-      const minPeriods = Math.max(5, subjectData.min_periods_per_week || subjectData.hours_per_week || 5);
-      const hoursPerWeek = Math.max(minPeriods, subjectData.hours_per_week || 5);
-      
       const subjectToSave = {
         name: subjectData.name,
         code: subjectData.code,
         credits: subjectData.credits,
-        hours_per_week: hoursPerWeek,
+        hours_per_week: subjectData.hours_per_week,
         department_id: subjectData.department_id,
         semester: subjectData.semester,
-        subject_type: subjectData.subject_type,
-        is_elective: subjectData.is_elective || false,
-        min_periods_per_week: minPeriods
+        subject_type: subjectData.subject_type
       };
       
       if (subjectData.id) {
@@ -428,9 +413,6 @@ export default function Subjects() {
                       <Badge variant="outline" className="text-xs">
                         {subject.hours_per_week} Hrs/Week
                       </Badge>
-                      <Badge variant="outline" className="text-xs">
-                        Min {subject.min_periods_per_week || 5} Periods/Week
-                      </Badge>
                       <Badge 
                         variant={subject.subject_type === 'lab' ? 'destructive' : 
                                 subject.subject_type === 'theory' ? 'default' : 'secondary'} 
@@ -438,11 +420,6 @@ export default function Subjects() {
                       >
                         {subject.subject_type.charAt(0).toUpperCase() + subject.subject_type.slice(1)}
                       </Badge>
-                      {subject.is_elective && (
-                        <Badge variant="outline" className="text-xs border-orange-500 text-orange-600">
-                          Elective
-                        </Badge>
-                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -495,21 +472,9 @@ function SubjectForm({ subject, departments, semesters, subjectTypes, minimumPer
     hours_per_week: subject?.hours_per_week || 5,
     department_id: subject?.department_id || '',
     semester: subject?.semester || 1,
-    subject_type: subject?.subject_type || 'theory',
-    is_elective: subject?.is_elective || false,
-    min_periods_per_week: subject?.min_periods_per_week || 5
+    subject_type: subject?.subject_type || 'theory'
   });
 
-  // Auto-adjust minimum periods when hours per week changes
-  useEffect(() => {
-    const minPeriods = Math.max(5, formData.hours_per_week);
-    if (formData.min_periods_per_week < minPeriods) {
-      setFormData(prev => ({
-        ...prev,
-        min_periods_per_week: minPeriods
-      }));
-    }
-  }, [formData.hours_per_week, formData.min_periods_per_week]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -566,24 +531,6 @@ function SubjectForm({ subject, departments, semesters, subjectTypes, minimumPer
             onChange={(e) => setFormData(prev => ({ ...prev, hours_per_week: parseInt(e.target.value) }))}
             required
           />
-        </div>
-        <div>
-          <Label htmlFor="min_periods_per_week">Min Periods/Week *</Label>
-          <Select
-            value={formData.min_periods_per_week.toString()}
-            onValueChange={(value) => setFormData(prev => ({ ...prev, min_periods_per_week: parseInt(value) }))}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Select Min Periods" />
-            </SelectTrigger>
-            <SelectContent>
-              {[5, 6, 7, 8, 9, 10].map(periods => (
-                <SelectItem key={periods} value={periods.toString()}>
-                  {periods} periods
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
         </div>
       </div>
 
@@ -652,26 +599,11 @@ function SubjectForm({ subject, departments, semesters, subjectTypes, minimumPer
         </div>
       </div>
 
-      <div className="flex items-center space-x-2">
-        <input
-          type="checkbox"
-          id="is_elective"
-          checked={formData.is_elective}
-          onChange={(e) => setFormData(prev => ({ ...prev, is_elective: e.target.checked }))}
-          className="rounded border-gray-300"
-        />
-        <Label htmlFor="is_elective">
-          Elective Subject
-        </Label>
-        <p className="text-sm text-muted-foreground">
-          (Can be offered to multiple semesters/departments)
-        </p>
-      </div>
 
       <div className="bg-blue-50 p-4 rounded-lg">
         <h4 className="font-semibold text-sm mb-2">Scheduling Information</h4>
         <div className="text-sm text-muted-foreground space-y-1">
-          <p>• This subject will have at least {formData.min_periods_per_week} periods per week in the timetable</p>
+          <p>• This subject will have {formData.hours_per_week} hours per week in the timetable</p>
           <p>• Staff from any department can be assigned to teach this subject</p>
           <p>• {formData.subject_type === 'lab' ? 'Requires lab rooms with appropriate equipment' : 
                formData.subject_type === 'theory' ? 'Can be scheduled in any classroom' :

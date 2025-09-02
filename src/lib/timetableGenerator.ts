@@ -284,20 +284,30 @@ export class ClientTimetableGenerator {
       }))
     };
 
-    const prompt = `You are an AI timetable generator for a university. Generate a comprehensive timetable in JSON format for semester ${selectedSemester}.
+    const prompt = `You are an AI timetable generator for Mohan Babu University. Generate a comprehensive timetable in JSON format for semester ${selectedSemester} based on the reference image format provided.
 
 CRITICAL DATABASE CONSTRAINTS (WILL CAUSE SAVE FAILURES IF VIOLATED):
 1. UNIQUE(staff_id, day_of_week, time_slot) - Same staff cannot teach multiple classes at same time
 2. UNIQUE(room_id, day_of_week, time_slot) - Same room cannot host multiple classes at same time  
 3. UNIQUE(section_id, day_of_week, time_slot) - Same section cannot have multiple classes at same time
 
-CRITICAL REQUIREMENTS:
-1. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping)
-2. NO staff conflicts: Each staff member can only be in ONE place at any given day/time_slot
-3. NO room conflicts: Each room can only host ONE class at any given day/time_slot
-4. NO section conflicts: Each section can only have ONE class at any given day/time_slot
-5. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms
-6. Theory subjects can use any classroom or lab
+TIMETABLE FORMAT REQUIREMENTS (Based on MBU Format):
+1. Days: 1-6 (Monday=1 to Saturday=6)
+2. Time Slots: 1-5 representing periods (8:00AM-8:55AM, 8:55AM-9:50AM, 10:15AM-11:10AM, 11:10AM-12:05PM, 12:05PM-1:00PM)
+3. Break between slots 2-3 (9:50AM-10:15AM)
+4. Subject codes should be displayed (like DV, BIT, DA, etc.)
+
+ENHANCED SUBJECT HANDLING:
+1. THEORY+LAB SUBJECTS: For subjects that need both theory and lab components:
+   - Generate theory classes using regular classrooms
+   - Generate separate lab sessions using lab rooms with "LAB" suffix
+   - Both theory and lab should have same subject_id but different room types
+2. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping)
+3. NO staff conflicts: Each staff member can only be in ONE place at any given day/time_slot
+4. NO room conflicts: Each room can only host ONE class at any given day/time_slot
+5. NO section conflicts: Each section can only have ONE class at any given day/time_slot
+6. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms
+7. Theory subjects can use any classroom or lab
 7. Each subject must be scheduled for its required hours_per_week across the week
 8. Time slots: 1-8 representing different periods of the day
 9. Days: 1-5 (Monday=1 to Friday=5 - NO SATURDAY classes)

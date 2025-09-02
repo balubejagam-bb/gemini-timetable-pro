@@ -180,9 +180,7 @@ export default function Departments() {
           const values = line.split(',').map(v => v.trim());
           return {
             name: values[0] || '',
-            code: values[1] || '',
-            description: values[2] || '',
-            hod: values[3] || ''
+            code: values[1] || ''
           };
         });
 
