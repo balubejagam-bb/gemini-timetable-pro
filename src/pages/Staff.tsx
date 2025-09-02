@@ -306,9 +306,17 @@ export default function Staff() {
           };
         });
 
-      // Insert all staff members
-      for (const staff of staffData) {
-        await supabase.from('staff').insert(staff);
+      // Insert all staff members with error handling
+      const results = await Promise.allSettled(
+        staffData.map(staff => supabase.from('staff').insert(staff))
+      );
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected');
+      
+      if (failed.length > 0) {
+        console.error('Failed insertions:', failed);
+        throw new Error(`${failed.length} insertions failed`);
       }
 
       toast({

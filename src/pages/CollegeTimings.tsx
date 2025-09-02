@@ -171,9 +171,17 @@ export default function CollegeTimings() {
           };
         });
 
-      // Insert all timings
-      for (const timing of timingData) {
-        await supabase.from('college_timings').insert(timing);
+      // Insert all timings with error handling
+      const results = await Promise.allSettled(
+        timingData.map(timing => supabase.from('college_timings').insert(timing))
+      );
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected');
+      
+      if (failed.length > 0) {
+        console.error('Failed insertions:', failed);
+        throw new Error(`${failed.length} insertions failed`);
       }
 
       toast({

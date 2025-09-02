@@ -209,9 +209,17 @@ export default function Subjects() {
           };
         });
 
-      // Insert all subjects
-      for (const subject of subjectData) {
-        await supabase.from('subjects').insert(subject);
+      // Insert all subjects with error handling
+      const results = await Promise.allSettled(
+        subjectData.map(subject => supabase.from('subjects').insert(subject))
+      );
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected');
+      
+      if (failed.length > 0) {
+        console.error('Failed insertions:', failed);
+        throw new Error(`${failed.length} insertions failed`);
       }
 
       toast({

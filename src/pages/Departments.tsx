@@ -184,9 +184,17 @@ export default function Departments() {
           };
         });
 
-      // Insert all departments
-      for (const dept of departmentData) {
-        await supabase.from('departments').insert(dept);
+      // Insert all departments with error handling
+      const results = await Promise.allSettled(
+        departmentData.map(dept => supabase.from('departments').insert(dept))
+      );
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected');
+      
+      if (failed.length > 0) {
+        console.error('Failed insertions:', failed);
+        throw new Error(`${failed.length} insertions failed`);
       }
 
       toast({

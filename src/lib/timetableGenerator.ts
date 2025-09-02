@@ -293,41 +293,43 @@ CRITICAL DATABASE CONSTRAINTS (WILL CAUSE SAVE FAILURES IF VIOLATED):
 
 TIMETABLE FORMAT REQUIREMENTS (Based on MBU Format):
 1. Days: 1-6 (Monday=1 to Saturday=6)
-2. Time Slots: 1-5 representing periods (8:00AM-8:55AM, 8:55AM-9:50AM, 10:15AM-11:10AM, 11:10AM-12:05PM, 12:05PM-1:00PM)
-3. Break between slots 2-3 (9:50AM-10:15AM)
+2. Time Slots: 1-5 representing periods (08:00AM-08:55AM, 08:55AM-09:50AM, 10:15AM-11:10AM, 11:10AM-12:05PM, 12:05PM-01:00PM)
+3. Break between slots 2-3 (09:50AM-10:15AM)
 4. Subject codes should be displayed (like DV, BIT, DA, etc.)
+5. For theory+lab subjects: Create both theory and lab entries with same subject_id but different room types
 
 ENHANCED SUBJECT HANDLING:
 1. THEORY+LAB SUBJECTS: For subjects that need both theory and lab components:
-   - Generate theory classes using regular classrooms
-   - Generate separate lab sessions using lab rooms with "LAB" suffix
-   - Both theory and lab should have same subject_id but different room types
+   - Generate theory classes using regular classrooms  
+   - Generate separate lab sessions using lab rooms with "LAB" suffix in timetable
+   - Both should use same subject_id but different room types (classroom vs lab)
+   - Lab sessions should be scheduled in rooms with room_type='lab' or 'practical'
 2. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping)
 3. NO staff conflicts: Each staff member can only be in ONE place at any given day/time_slot
 4. NO room conflicts: Each room can only host ONE class at any given day/time_slot
 5. NO section conflicts: Each section can only have ONE class at any given day/time_slot
 6. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms
 7. Theory subjects can use any classroom or lab
-7. Each subject must be scheduled for its required hours_per_week across the week
-8. Time slots: 1-8 representing different periods of the day
-9. Days: 1-5 (Monday=1 to Friday=5 - NO SATURDAY classes)
-10. NO FREE PERIODS: Every time slot from 1-8 on each day (Mon-Fri) must have a scheduled class
-11. FILL ALL SLOTS: Use available subjects to fill all 40 time slots (5 days × 8 periods)
+8. Each subject must be scheduled for its required hours_per_week across the week
+9. Time slots: 1-5 representing periods (MBU format)
+10. Days: 1-6 (Monday=1 to Saturday=6)
+11. NO GAPS: Every time slot should have scheduled classes to avoid free periods
 
 CONFLICT RESOLUTION STRATEGY:
 - If a staff member is already assigned to day X, slot Y, find different staff for other subjects at that time
 - If a room is already used at day X, slot Y, find different room for other classes at that time
 - Spread subject hours across different days and time slots
 - Prioritize avoiding conflicts over perfect distribution
-- Repeat subjects if necessary to fill all time slots (no free periods allowed)
+- For theory+lab subjects: Schedule lab sessions in lab rooms and theory in regular classrooms
 
 OPTIMIZATION GOALS:
-- Fill all 40 time slots (5 days × 8 periods) with classes (most important)
+- Schedule all subjects according to their hours_per_week requirement
 - Minimize scheduling conflicts 
 - Balance faculty workload (respect max_hours_per_week)  
 - Use room capacity efficiently
-- Spread lab sessions across different days
+- Spread lab sessions across different days to avoid congestion
 - Minimize gaps in student schedules
+- Follow MBU timetable format with proper time slots (1-5) and days (1-6)
 
 DATA PROVIDED:
 ${JSON.stringify(promptData, null, 2)}
@@ -350,8 +352,11 @@ IMPORTANT: Before adding each entry, verify:
 - This staff_id is not already used at this day_of_week + time_slot
 - This room_id is not already used at this day_of_week + time_slot  
 - This section_id is not already used at this day_of_week + time_slot
+- Use time_slot values 1-5 only (MBU format)
+- Use day_of_week values 1-6 (Monday to Saturday)
 
-Generate entries for ALL sections and subjects, ensuring NO DUPLICATE assignments for the same day/time combination.`;
+Generate entries for ALL sections and subjects, ensuring NO DUPLICATE assignments for the same day/time combination.
+For subjects needing both theory and lab: create separate entries with different room types but same subject_id.`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${this.googleApiKey}`,
@@ -418,9 +423,9 @@ Generate entries for ALL sections and subjects, ensuring NO DUPLICATE assignment
              entry.staff_id && 
              entry.room_id && 
              entry.day_of_week >= 1 && 
-             entry.day_of_week <= 5 && // Only Monday to Friday
+             entry.day_of_week <= 6 && // Monday to Saturday (MBU format)
              entry.time_slot >= 1 && 
-             entry.time_slot <= 8 &&
+             entry.time_slot <= 5 && // MBU format: 5 periods per day
              entry.semester === selectedSemester;
     });
 
