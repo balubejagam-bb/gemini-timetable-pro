@@ -260,8 +260,61 @@ export default function TimetableView() {
     }
   };
 
+  // Generic selective print utility
+  const printTimetableElements = (elements: HTMLElement[]) => {
+    if (!elements.length) {
+      toast({ title: 'Nothing to print', description: 'No timetable content available', variant: 'destructive' });
+      return;
+    }
+    const existing = document.getElementById('print-container');
+    if (existing) existing.remove();
+    const container = document.createElement('div');
+    container.id = 'print-container';
+    container.style.padding = '16px';
+    container.style.fontFamily = 'sans-serif';
+    elements.forEach(el => {
+      const clone = el.cloneNode(true) as HTMLElement;
+      // Remove checkbox overlays etc.
+      clone.querySelectorAll('button,input,[data-hidden-print]')?.forEach(n => (n as HTMLElement).remove());
+      container.appendChild(clone);
+      const spacer = document.createElement('div');
+      spacer.style.pageBreakAfter = 'always';
+      container.appendChild(spacer);
+    });
+    // Style for print isolation
+    const style = document.createElement('style');
+    style.textContent = `@media print {
+      body * { visibility: hidden !important; }
+      #print-container, #print-container * { visibility: visible !important; }
+      #print-container { position: absolute; left:0; top:0; width:100%; }
+      #print-container table { width:100%; border-collapse: collapse; }
+      #print-container th, #print-container td { border:1px solid #555 !important; padding:4px 6px; font-size:11px; }
+      #print-container h2, #print-container h3 { margin:4px 0 8px; }
+    }`;
+    document.head.appendChild(style);
+    document.body.appendChild(container);
+    setTimeout(() => {
+      window.print();
+      setTimeout(() => {
+        container.remove();
+        style.remove();
+      }, 250);
+    }, 50);
+  };
+
   const handlePrint = () => {
-    window.print();
+    if (viewMode === 'single') {
+      const el = document.querySelector('#single-timetable-export .timetable-print-root') as HTMLElement | null;
+      if (el) printTimetableElements([el]);
+      else toast({ title: 'Print Error', description: 'Timetable not loaded', variant: 'destructive' });
+    } else {
+      // Print all or selected
+      const all = Array.from(document.querySelectorAll('.timetable-grid-export .timetable-print-root')) as HTMLElement[];
+      const targets = selectedExportKeys.length
+        ? all.filter(el => selectedExportKeys.includes((el.closest('.timetable-grid-export') as HTMLElement)?.dataset.exportKey || ''))
+        : all;
+      printTimetableElements(targets);
+    }
   };
 
   const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, showActions = false, deptId?: string, sectionName?: string, semester?: number) => (
@@ -297,51 +350,48 @@ export default function TimetableView() {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto">
-          <div className={`grid grid-cols-6 gap-1 md:gap-2 min-w-full ${isMobile ? 'text-xs' : ''}`}>
-            {/* Header */}
-            <div className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
-              Time
-            </div>
-            {days.map(day => (
-              <div key={day} className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
-                {isMobile ? day.substring(0, 3) : day}
-              </div>
-            ))}
-
-            {/* Time slots and schedule */}
-            {timeSlots.map((timeSlot, index) => (
-              <div key={timeSlot} className="contents">
-                <div className="p-2 md:p-3 bg-muted/50 rounded-lg text-center font-medium text-xs">
-                  {isMobile ? timeSlot.split('-')[0] : timeSlot}
-                </div>
-                {days.map((day, dayIndex) => {
-                  const entry = getTimetableEntry(entries, dayIndex + 1, index + 1);
-                  
-                  if (!entry) {
+        <div className="overflow-x-auto timetable-print-root">
+          <table className={`w-full border border-border text-left align-top ${isMobile ? 'text-[10px]' : 'text-xs md:text-sm'}`}>
+            <thead>
+              <tr>
+                <th className="bg-muted p-2 md:p-3 font-semibold text-center border border-border">Time</th>
+                {days.map(d => (
+                  <th key={d} className="bg-muted p-2 md:p-3 font-semibold text-center border border-border">
+                    {isMobile ? d.substring(0,3) : d}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {timeSlots.map((slotLabel, slotIdx) => (
+                <tr key={slotLabel}>
+                  <td className="bg-muted/40 p-2 md:p-3 font-medium text-center border border-border whitespace-nowrap">
+                    {isMobile ? slotLabel.split('-')[0] : slotLabel}
+                  </td>
+                  {days.map((d, dayIdx) => {
+                    const entry = getTimetableEntry(entries, dayIdx + 1, slotIdx + 1);
+                    if (!entry) {
+                      return (
+                        <td key={d} className="p-1 md:p-3 border border-dashed text-center text-muted-foreground align-top">
+                          {isMobile ? 'Free' : 'Free Period'}
+                        </td>
+                      );
+                    }
                     return (
-                      <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-xs">
-                        {isMobile ? "Free" : "Free Period"}
-                      </div>
+                      <td key={d} className="p-1 md:p-3 border align-top">
+                        <div className="flex flex-col gap-1">
+                          <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} w-fit text-[10px] md:text-xs`}>{entry.subjects.code}</Badge>
+                          <span className="font-medium leading-snug truncate">{entry.subjects.name}</span>
+                          <span className="text-[10px] text-muted-foreground truncate">{entry.staff.name}</span>
+                          <span className="text-[10px] text-muted-foreground">Room: {entry.rooms.room_number}</span>
+                        </div>
+                      </td>
                     );
-                  }
-
-                  return (
-                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border rounded-lg hover:shadow-sm transition-shadow">
-                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-1 text-xs`}>
-                        {entry.subjects.code}
-                      </Badge>
-                      <div className="space-y-1">
-                        <p className="text-xs md:text-sm font-medium truncate">{entry.subjects.name}</p>
-                        <p className="text-xs text-muted-foreground truncate">{entry.staff.name}</p>
-                        <p className="text-xs text-muted-foreground">Room: {entry.rooms.room_number}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </CardContent>
     </Card>
