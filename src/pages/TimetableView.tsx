@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,9 +9,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Download, Edit3, RefreshCw, Calendar, Grid, Eye } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Download, Edit3, RefreshCw, Calendar, Grid, Eye, Search, Printer, RotateCcw } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const timeSlots = [
   "9:00-10:00",
@@ -63,6 +66,8 @@ interface AllTimetablesData {
 }
 
 export default function TimetableView() {
+  const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const [selectedDepartment, setSelectedDepartment] = useState("");
   const [selectedSection, setSelectedSection] = useState("");
   const [selectedSemester, setSelectedSemester] = useState("");
@@ -75,6 +80,8 @@ export default function TimetableView() {
   const [exporting, setExporting] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]); // deptId|sectionName|semester
+  const [searchTerm, setSearchTerm] = useState("");
+  const [regenerating, setRegenerating] = useState(false);
   const { toast } = useToast();
 
   const fetchDepartments = useCallback(async () => {
@@ -226,50 +233,80 @@ export default function TimetableView() {
     );
   };
 
+  const handleRegenerate = async () => {
+    if (!selectedSection || !selectedSemester) {
+      toast({
+        title: "Selection Required",
+        description: "Please select department, section and semester first",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    setRegenerating(true);
+    try {
+      // Navigate to generate page with pre-filled values
+      navigate(`/generate?department=${selectedDepartment}&section=${selectedSection}&semester=${selectedSemester}`);
+    } catch (error) {
+      console.error('Error navigating to generate:', error);
+      toast({
+        title: "Error",
+        description: "Failed to navigate to generation page",
+        variant: "destructive"
+      });
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const handlePrint = () => {
+    window.print();
+  };
+
   const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string) => (
     <Card className="mb-6 timetable-grid-export" data-export-key={exportKey || ''}>
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
         <CardDescription>{entries.length} entries loaded</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
-          <div className="grid grid-cols-6 gap-2 min-w-full">
+          <div className={`grid grid-cols-6 gap-1 md:gap-2 min-w-full ${isMobile ? 'text-xs' : ''}`}>
             {/* Header */}
-            <div className="font-semibold p-3 bg-muted rounded-lg text-center">
+            <div className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
               Time
             </div>
             {days.map(day => (
-              <div key={day} className="font-semibold p-3 bg-muted rounded-lg text-center">
-                {day}
+              <div key={day} className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
+                {isMobile ? day.substring(0, 3) : day}
               </div>
             ))}
 
             {/* Time slots and schedule */}
             {timeSlots.map((timeSlot, index) => (
               <div key={timeSlot} className="contents">
-                <div className="p-3 bg-muted/50 rounded-lg text-center font-medium text-sm">
-                  {timeSlot}
+                <div className="p-2 md:p-3 bg-muted/50 rounded-lg text-center font-medium text-xs">
+                  {isMobile ? timeSlot.split('-')[0] : timeSlot}
                 </div>
                 {days.map((day, dayIndex) => {
                   const entry = getTimetableEntry(entries, dayIndex + 1, index + 1);
                   
                   if (!entry) {
                     return (
-                      <div key={`${day}-${timeSlot}`} className="p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-sm">
-                        Free Period
+                      <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-xs">
+                        {isMobile ? "Free" : "Free Period"}
                       </div>
                     );
                   }
 
                   return (
-                    <div key={`${day}-${timeSlot}`} className="p-3 border rounded-lg hover:shadow-sm transition-shadow">
-                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-2 text-xs`}>
+                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border rounded-lg hover:shadow-sm transition-shadow">
+                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-1 text-xs`}>
                         {entry.subjects.code}
                       </Badge>
                       <div className="space-y-1">
-                        <p className="text-sm font-medium">{entry.subjects.name}</p>
-                        <p className="text-xs text-muted-foreground">{entry.staff.name}</p>
+                        <p className="text-xs md:text-sm font-medium truncate">{entry.subjects.name}</p>
+                        <p className="text-xs text-muted-foreground truncate">{entry.staff.name}</p>
                         <p className="text-xs text-muted-foreground">Room: {entry.rooms.room_number}</p>
                       </div>
                     </div>
@@ -372,61 +409,81 @@ export default function TimetableView() {
 
   const clearAllExports = () => setSelectedExportKeys([]);
 
+  // Filter timetables based on search term
+  const filteredTimetablesData = Object.fromEntries(
+    Object.entries(allTimetablesData).filter(([_, dept]) =>
+      dept.departmentName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      Object.values(dept.sections).some(section =>
+        section.sectionName.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    )
+  );
+
   return (
-    <div className="space-y-6 animate-fade-in">
-      {/* Page Header */}
-      <div className="flex justify-between items-center">
+    <div className="space-y-4 md:space-y-6 animate-fade-in">
+      {/* Page Header - Mobile responsive */}
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Timetable View</h1>
-          <p className="text-muted-foreground">
-            View and manage generated timetables (Monday to Friday)
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Timetable View</h1>
+          <p className="text-sm md:text-base text-muted-foreground">
+            View and manage generated timetables
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size={isMobile ? "sm" : "default"}
+            className="gap-2"
+            onClick={handlePrint}
+          >
+            <Printer className="w-4 h-4" />
+            {isMobile ? "Print" : "Print"}
+          </Button>
           {viewMode === 'all' ? (
             <Button
               variant="outline"
-              size="sm"
+              size={isMobile ? "sm" : "default"}
               className="gap-2"
               onClick={() => setExportDialogOpen(true)}
               disabled={exporting || (viewMode === 'all' && !Object.keys(allTimetablesData).length)}
             >
               <Download className="w-4 h-4" />
-              {exporting ? 'Exporting...' : 'Export PDF'}
+              {exporting ? 'Exporting...' : 'Export'}
             </Button>
           ) : (
             <Button
               variant="outline"
-              size="sm"
+              size={isMobile ? "sm" : "default"}
               className="gap-2"
               onClick={handleExportPDF}
               disabled={exporting || (viewMode === 'single' && !timetableData.length)}
             >
               <Download className="w-4 h-4" />
-              {exporting ? 'Exporting...' : 'Export PDF'}
+              {exporting ? 'Exporting...' : 'Export'}
             </Button>
           )}
-          <Button variant="outline" size="sm" className="gap-2">
-            <Edit3 className="w-4 h-4" />
-            Edit
-          </Button>
-          <Button size="sm" className="gap-2">
-            <RefreshCw className="w-4 h-4" />
-            Regenerate
+          <Button 
+            size={isMobile ? "sm" : "default"} 
+            className="gap-2"
+            onClick={handleRegenerate}
+            disabled={regenerating || (!selectedSection && !selectedSemester)}
+          >
+            <RotateCcw className="w-4 h-4" />
+            {regenerating ? 'Loading...' : 'Regenerate'}
           </Button>
         </div>
       </div>
 
-      {/* View Mode Selector */}
+      {/* View Mode Selector - Mobile responsive */}
       <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as "single" | "all")}>
         <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="single" className="flex items-center gap-2">
+          <TabsTrigger value="single" className="flex items-center gap-2 text-sm">
             <Eye className="w-4 h-4" />
-            Single Timetable
+            {isMobile ? "Single" : "Single Timetable"}
           </TabsTrigger>
-          <TabsTrigger value="all" className="flex items-center gap-2">
+          <TabsTrigger value="all" className="flex items-center gap-2 text-sm">
             <Grid className="w-4 h-4" />
-            All Timetables
+            {isMobile ? "All" : "All Timetables"}
           </TabsTrigger>
         </TabsList>
 
@@ -443,9 +500,9 @@ export default function TimetableView() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="flex gap-4">
+              <div className="flex flex-col md:flex-row gap-4">
                 <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
-                  <SelectTrigger className="w-48">
+                  <SelectTrigger className="w-full md:w-48">
                     <SelectValue placeholder="Select Department" />
                   </SelectTrigger>
                   <SelectContent>
@@ -462,7 +519,7 @@ export default function TimetableView() {
                   onValueChange={setSelectedSection}
                   disabled={!selectedDepartment}
                 >
-                  <SelectTrigger className="w-32">
+                  <SelectTrigger className="w-full md:w-32">
                     <SelectValue placeholder="Section" />
                   </SelectTrigger>
                   <SelectContent>
@@ -524,34 +581,80 @@ export default function TimetableView() {
         </TabsContent>
 
         <TabsContent value="all" className="space-y-6">
-          {/* All Timetables Display */}
+          {/* Search bar for all timetables */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Search className="w-5 h-5" />
+                Search Timetables
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Input
+                placeholder="Search by department or section name..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="max-w-md"
+              />
+            </CardContent>
+          </Card>
+
           {loading ? (
             <Card>
               <CardContent className="flex justify-center items-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
               </CardContent>
             </Card>
-          ) : Object.keys(allTimetablesData).length === 0 ? (
+          ) : Object.keys(filteredTimetablesData).length === 0 ? (
             <Card>
               <CardContent className="text-center py-8 text-muted-foreground">
-                <p>No timetable data found</p>
-                <p className="text-sm mt-1">Generate timetables first using the Generate Timetable page</p>
+                <p>{searchTerm ? "No timetables match your search." : "No timetable data found"}</p>
+                <p className="text-sm mt-1">
+                  {searchTerm ? "Try different search terms." : "Generate timetables first using the Generate Timetable page"}
+                </p>
               </CardContent>
             </Card>
           ) : (
-            <div className="space-y-8">
-              {Object.entries(allTimetablesData).map(([deptId, department]) => (
-                <div key={deptId}>
-                  <h2 className="text-2xl font-bold mb-4">{department.departmentName}</h2>
-                  {Object.entries(department.sections).map(([sectionKey, section]) => (
-                    renderTimetableGrid(
-                      section.entries,
-                      `${section.sectionName} - Semester ${section.semester}`,
-                      `${deptId}|${section.sectionName}|${section.semester}`
-                    )
-                  ))}
-                </div>
-              ))}
+            <div className="space-y-6">
+              {/* List view of all timetables */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>All Timetables ({Object.keys(filteredTimetablesData).length} departments)</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                    {Object.entries(filteredTimetablesData).map(([deptId, dept]) => (
+                      <Card key={deptId} className="p-4">
+                        <h3 className="font-semibold mb-2">{dept.departmentName}</h3>
+                        <div className="space-y-1">
+                          {Object.entries(dept.sections).map(([sectionKey, section]) => (
+                            <div key={sectionKey} className="flex justify-between items-center text-sm">
+                              <span>{section.sectionName}</span>
+                              <Badge variant="secondary">Sem {section.semester}</Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Detailed timetable grids */}
+              <div className="space-y-8">
+                {Object.entries(filteredTimetablesData).map(([deptId, department]) => (
+                  <div key={deptId}>
+                    <h2 className="text-xl md:text-2xl font-bold mb-4">{department.departmentName}</h2>
+                    {Object.entries(department.sections).map(([sectionKey, section]) => (
+                      renderTimetableGrid(
+                        section.entries,
+                        `${section.sectionName} - Semester ${section.semester}`,
+                        `${deptId}|${section.sectionName}|${section.semester}`
+                      )
+                    ))}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </TabsContent>

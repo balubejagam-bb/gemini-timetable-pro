@@ -23,6 +23,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const navigationItems = [
   { title: "Dashboard", url: "/", icon: GraduationCap },
@@ -38,7 +39,7 @@ const navigationItems = [
 ];
 
 export function AppSidebar() {
-  const { state } = useSidebar();
+  const { state, isMobile } = useSidebar();
   const collapsed = state === "collapsed";
   const location = useLocation();
   const currentPath = location.pathname;
@@ -56,28 +57,31 @@ export function AppSidebar() {
       : "hover:bg-accent hover:text-accent-foreground transition-colors";
 
   return (
-    <Sidebar className={`${collapsed ? "w-16" : "w-64"} border-r bg-card`}>
-      <SidebarContent className="p-4">
-        <div className={`${collapsed ? "text-center" : ""} mb-6`}>
-          {!collapsed ? (
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-                <GraduationCap className="w-5 h-5 text-primary-foreground" />
+    <Sidebar 
+      className={`${collapsed && !isMobile ? "w-16" : "w-64"} border-r bg-card`}
+      collapsible="icon"
+    >
+      <SidebarContent className="p-3 md:p-4">
+        <div className={`${collapsed && !isMobile ? "text-center" : ""} mb-4 md:mb-6`}>
+          {!collapsed || isMobile ? (
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-7 h-7 md:w-8 md:h-8 bg-primary rounded-lg flex items-center justify-center">
+                <GraduationCap className="w-4 h-4 md:w-5 md:h-5 text-primary-foreground" />
               </div>
-              <div>
-                <h2 className="font-bold text-lg">Mohan Babu University</h2>
-                <p className="text-xs text-muted-foreground">AI Timetable Generator</p>
+              <div className="min-w-0 flex-1">
+                <h2 className="font-bold text-sm md:text-lg truncate">Mohan Babu University</h2>
+                <p className="text-xs text-muted-foreground hidden md:block">AI Timetable Generator</p>
               </div>
             </div>
           ) : (
-            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center mx-auto">
-              <GraduationCap className="w-5 h-5 text-primary-foreground" />
+            <div className="w-7 h-7 md:w-8 md:h-8 bg-primary rounded-lg flex items-center justify-center mx-auto">
+              <GraduationCap className="w-4 h-4 md:w-5 md:h-5 text-primary-foreground" />
             </div>
           )}
         </div>
 
         <SidebarGroup>
-          <SidebarGroupLabel className={collapsed ? "sr-only" : ""}>
+          <SidebarGroupLabel className={collapsed && !isMobile ? "sr-only" : ""}>
             Navigation
           </SidebarGroupLabel>
           <SidebarGroupContent>
@@ -88,10 +92,12 @@ export function AppSidebar() {
                     <NavLink
                       to={item.url}
                       end={item.url === "/"}
-                      className={getNavClasses(isActive(item.url))}
+                      className={`${getNavClasses(isActive(item.url))} ${
+                        collapsed && !isMobile ? "justify-center" : ""
+                      }`}
                     >
                       <item.icon className="w-4 h-4 flex-shrink-0" />
-                      {!collapsed && <span className="ml-3">{item.title}</span>}
+                      {(!collapsed || isMobile) && <span className="ml-3 truncate">{item.title}</span>}
                     </NavLink>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
