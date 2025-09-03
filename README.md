@@ -2,45 +2,6 @@
 
 AI-powered university timetable management system using Google's Gemini AI for intelligent schedule generation.
 
-## 🎓 NEP 2020 Alignment (Multidisciplinary Timetable Generation)
-
-This project has been structured with the goals of India's National Education Policy (NEP) 2020 in mind, especially around flexibility, multidisciplinary learning, equitable workload distribution, and technology-enabled academic planning.
-
-### ✅ Implemented NEP-Oriented Capabilities
-
-| NEP 2020 Theme | Implemented Feature | Description |
-| -------------- | ------------------ | ----------- |
-| Multidisciplinary Integration | Unified model for departments, cross-listed staff capability (can_teach_across_departments), shared room pool | Foundation for inter-department scheduling and resource sharing |
-| Flexible Curriculum Structure | Subject metadata (credits, hours_per_week, subject_type lab/theory, is_elective flag scaffold) | Supports differentiation of theory, lab, practical & elective scaffolding |
-| Faculty Workload & Optimization | Conflict-free allocation + max weekly hour metadata + (planned) availability usage | Prevents double-booking and prepares for fair load balancing |
-| Experiential / Lab Emphasis | Explicit lab vs classroom room-type mapping & lab scheduling rules | Ensures practical components are scheduled in proper facilities |
-| Academic Efficiency & Engagement | Minimum daily instructional load (≥3 classes/section/day) post-processing | Reduces underutilized days and improves structured engagement |
-| Data-Driven Governance | department_stats view, structured Supabase schema, AI-assisted generation logs | Provides analytical surface for future dashboards |
-| Technology Integration & AI | Google Gemini powered draft + deterministic validation + filler logic | Combines AI creativity with rule-based correctness |
-| Continuous Improvement Path | Migration adding elective + specialization fields | Schema already anticipates richer NEP constructs |
-
-### 🧠 How AI Supports NEP Goals
-1. Draft Generation: Gemini proposes a multi-section schedule across days & slots.
-2. Policy Enforcement Layer: Post-processing removes conflicts (staff/room/section) and enforces minimum daily engagement.
-3. Structural Readiness: Schema fields (is_elective, specializations, can_teach_across_departments, min_periods_per_week) allow expansion into elective baskets, interdisciplinary offerings, and faculty qualification logic.
-
-### 🔍 Current Scope vs. Full NEP Vision
-The system already covers core structural & operational foundations (conflict-free multi-department timetabling, lab/theory distinction, credit + hours metadata, AI augmentation). Some advanced NEP 2020 elements are intentionally staged for future iterations:
-
-Planned Enhancements (Roadmap):
-- Elective basket management (foundation/core/elective/skill/value-add categorization & credit range enforcement)
-- Student-level preference & seat allocation for open electives
-- Enforcement of staff availability & max_hours_per_week in generation step (schema prepared)
-- Cross-department teaching qualification rules using specializations
-- Credit load validation against semester/program bands
-- Project / internship / multidisciplinary cluster slots
-- Analytics: workload balance, room utilization, elective fill rates
-
-### 🏁 Statement
-Gemini Timetable Pro already satisfies the foundational requirements to operationalize NEP 2020-inspired multidisciplinary and flexible scheduling in a university context: it unifies academic entities, differentiates instructional modalities, embeds AI-driven generation with deterministic academic constraints, and provisions schema-level extensibility for elective and interdisciplinary expansion. Remaining advanced NEP constructs (elective seat allocation, program-level credit governance, personalized pathways) are supported by existing data model extensions and are enumerated in the roadmap above.
-
-> If you require a formal compliance dossier or whitepaper, you can generate one using this README’s alignment matrix plus database migration history (see `supabase/migrations/`).
-
 ## 🚀 Features
 
 - **AI-Powered Timetable Generation**: Uses Google Gemini 1.5 Pro for intelligent scheduling
