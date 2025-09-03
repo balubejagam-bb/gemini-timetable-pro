@@ -82,6 +82,7 @@ export default function TimetableView() {
   const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]); // deptId|sectionName|semester
   const [searchTerm, setSearchTerm] = useState("");
   const [regenerating, setRegenerating] = useState(false);
+  const [editingTimetable, setEditingTimetable] = useState<{deptId: string, sectionName: string, semester: number} | null>(null);
   const { toast } = useToast();
 
   const fetchDepartments = useCallback(async () => {
@@ -263,11 +264,37 @@ export default function TimetableView() {
     window.print();
   };
 
-  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string) => (
+  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, showActions = false, deptId?: string, sectionName?: string, semester?: number) => (
     <Card className="mb-6 timetable-grid-export" data-export-key={exportKey || ''}>
       <CardHeader>
-        <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
-        <CardDescription>{entries.length} entries loaded</CardDescription>
+        <div className="flex flex-col md:flex-row md:justify-between md:items-start gap-2">
+          <div className="flex-1">
+            <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
+            <CardDescription>{entries.length} entries loaded</CardDescription>
+          </div>
+          {showActions && deptId && sectionName && semester && (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleTimetableClick(deptId, sectionName, semester)}
+                className="gap-1"
+              >
+                <Eye className="w-3 h-3" />
+                View
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleEditTimetable(deptId, sectionName, semester)}
+                className="gap-1"
+              >
+                <Edit3 className="w-3 h-3" />
+                Edit
+              </Button>
+            </div>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
@@ -408,6 +435,23 @@ export default function TimetableView() {
   };
 
   const clearAllExports = () => setSelectedExportKeys([]);
+
+  const handleTimetableClick = (deptId: string, sectionName: string, semester: number) => {
+    // Find the section ID for navigation
+    const dept = departments.find(d => d.id === deptId);
+    if (dept) {
+      setSelectedDepartment(deptId);
+      setSelectedSemester(semester.toString());
+      setViewMode("single");
+      // Note: sections will be fetched automatically via useEffect
+    }
+  };
+
+  const handleEditTimetable = (deptId: string, sectionName: string, semester: number) => {
+    setEditingTimetable({ deptId, sectionName, semester });
+    // Navigate to generate page with pre-filled values for editing
+    navigate(`/generate?department=${deptId}&semester=${semester}&edit=true`);
+  };
 
   // Filter timetables based on search term
   const filteredTimetablesData = Object.fromEntries(
@@ -624,17 +668,34 @@ export default function TimetableView() {
                 <CardContent>
                   <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                     {Object.entries(filteredTimetablesData).map(([deptId, dept]) => (
-                      <Card key={deptId} className="p-4">
-                        <h3 className="font-semibold mb-2">{dept.departmentName}</h3>
-                        <div className="space-y-1">
-                          {Object.entries(dept.sections).map(([sectionKey, section]) => (
-                            <div key={sectionKey} className="flex justify-between items-center text-sm">
-                              <span>{section.sectionName}</span>
-                              <Badge variant="secondary">Sem {section.semester}</Badge>
-                            </div>
-                          ))}
-                        </div>
-                      </Card>
+                       <Card key={deptId} className="p-4">
+                         <h3 className="font-semibold mb-2">{dept.departmentName}</h3>
+                         <div className="space-y-1">
+                           {Object.entries(dept.sections).map(([sectionKey, section]) => (
+                             <div 
+                               key={sectionKey} 
+                               className="flex justify-between items-center text-sm p-2 rounded hover:bg-muted cursor-pointer transition-colors"
+                               onClick={() => handleTimetableClick(deptId, section.sectionName, section.semester)}
+                             >
+                               <span>{section.sectionName}</span>
+                               <div className="flex gap-2 items-center">
+                                 <Badge variant="secondary">Sem {section.semester}</Badge>
+                                 <Button
+                                   variant="ghost"
+                                   size="sm"
+                                   onClick={(e) => {
+                                     e.stopPropagation();
+                                     handleEditTimetable(deptId, section.sectionName, section.semester);
+                                   }}
+                                   className="h-6 w-6 p-0"
+                                 >
+                                   <Edit3 className="w-3 h-3" />
+                                 </Button>
+                               </div>
+                             </div>
+                           ))}
+                         </div>
+                       </Card>
                     ))}
                   </div>
                 </CardContent>
@@ -645,13 +706,29 @@ export default function TimetableView() {
                 {Object.entries(filteredTimetablesData).map(([deptId, department]) => (
                   <div key={deptId}>
                     <h2 className="text-xl md:text-2xl font-bold mb-4">{department.departmentName}</h2>
-                    {Object.entries(department.sections).map(([sectionKey, section]) => (
-                      renderTimetableGrid(
-                        section.entries,
-                        `${section.sectionName} - Semester ${section.semester}`,
-                        `${deptId}|${section.sectionName}|${section.semester}`
-                      )
-                    ))}
+                     {Object.entries(department.sections).map(([sectionKey, section]) => {
+                       const exportKey = `${deptId}|${section.sectionName}|${section.semester}`;
+                       return (
+                         <div key={sectionKey} className="relative">
+                           <div className="absolute top-4 right-4 z-10">
+                             <Checkbox
+                               checked={selectedExportKeys.includes(exportKey)}
+                               onCheckedChange={() => toggleExportKey(exportKey)}
+                               className="bg-background border-2"
+                             />
+                           </div>
+                           {renderTimetableGrid(
+                             section.entries,
+                             `${section.sectionName} - Semester ${section.semester}`,
+                             exportKey,
+                             true, // showActions
+                             deptId,
+                             section.sectionName,
+                             section.semester
+                           )}
+                         </div>
+                       );
+                     })}
                   </div>
                 ))}
               </div>
@@ -699,8 +776,24 @@ export default function TimetableView() {
             </div>
           </div>
           <DialogFooter className="mt-4 flex gap-2">
-            <Button type="button" variant="outline" onClick={() => setExportDialogOpen(false)} disabled={exporting}>Cancel</Button>
+            <Button type="button" variant="outline" onClick={() => setExportDialogOpen(false)} disabled={exporting}>
+              Cancel
+            </Button>
+            <Button 
+              type="button" 
+              variant="outline"
+              onClick={() => {
+                setExportDialogOpen(false);
+                setTimeout(() => window.print(), 100);
+              }}
+              disabled={selectedExportKeys.length === 0 && Object.keys(allTimetablesData).length === 0}
+              className="gap-2"
+            >
+              <Printer className="w-4 h-4" />
+              Print {selectedExportKeys.length ? 'Selected' : 'All'}
+            </Button>
             <Button type="button" onClick={handleExportPDF} disabled={exporting} className="gap-2">
+              <Download className="w-4 h-4" />
               {exporting ? 'Exporting...' : `Export ${selectedExportKeys.length ? 'Selected' : 'All'}`}
             </Button>
           </DialogFooter>
