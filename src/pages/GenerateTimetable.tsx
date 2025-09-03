@@ -8,7 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Sparkles, Brain, AlertTriangle, CheckCircle, Settings, Zap, Database } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-import { ClientTimetableGenerator, SimpleTimetableGenerator } from "@/lib/timetableGenerator";
+import { ClientTimetableGenerator } from "@/lib/timetableGenerator";
 import DatabaseDebug from "@/lib/databaseDebug";
 
 interface Department {
@@ -126,7 +126,7 @@ export default function GenerateTimetable() {
       const aiGenerator = new ClientTimetableGenerator();
       setProgress(40);
       
-      const result = await aiGenerator.generateTimetable(selectedDepartments, parseInt(selectedSemester));
+  const result = await aiGenerator.generateTimetable(selectedDepartments, parseInt(selectedSemester));
       setProgress(80);
 
       if (result.success) {
