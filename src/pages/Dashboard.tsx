@@ -13,7 +13,8 @@ import {
   Calendar,
   Sparkles,
   TrendingUp,
-  Clock
+  Clock,
+  User
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -95,109 +96,127 @@ export default function Dashboard() {
   );
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      {/* Page Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-          <p className="text-muted-foreground">
-            Real-time analytics for the AI timetable system
-          </p>
-        </div>
-        <Link to="/generate">
-          <Button size="lg" className="gap-2 animate-glow">
-            <Sparkles className="w-4 h-4" />
-            Generate Timetable
-          </Button>
-        </Link>
-      </div>
-
-      {/* Stats Grid */}
-      {loading || !counts ? LoadingGrid : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <StatsCard title="Total Subjects" value={counts.subjects} description="Active subjects" icon={BookOpen} color="info" />
-          <StatsCard title="Sections" value={counts.sections} description="All sections" icon={Users} color="success" />
-          <StatsCard title="Departments" value={counts.departments} description="Academic units" icon={Building2} color="warning" />
-          <StatsCard title="Available Rooms" value={counts.rooms} description="Classrooms & labs" icon={MapPin} />
-        </div>
-      )}
-
-      {/* Additional Stats */}
-      {loading || !counts ? (
-        <div className="grid gap-4 md:grid-cols-3">
-          {Array.from({length:3}).map((_,i)=>(<Skeleton key={i} className="h-32 w-full" />))}
-        </div>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-3">
-          <StatsCard title="Faculty Members" value={counts.staff} description="Teaching staff" icon={UserCheck} color="success" />
-          <StatsCard title="Generated Timetables" value={counts.timetablesGenerated} description="Sections with schedules" icon={Calendar} color="info" />
-          <StatsCard title="Slot Utilization" value={`${efficiency}%`} description={`${counts.filledSlots}/${Math.max(counts.timetableSlots,1)} slots used`} icon={TrendingUp} color={efficiency>70? 'success' : 'warning'} />
-        </div>
-      )}
-
-      {/* Quick Actions & Activity */}
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-primary" />
-              Quick Actions
-            </CardTitle>
-            <CardDescription>
-              Frequently used management tools
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Link to="/subjects">
-              <Button variant="outline" className="w-full justify-start gap-2">
-                <BookOpen className="w-4 h-4" />
-                Manage Subjects
+    <div className="min-h-screen bg-gradient-to-br from-background via-accent/20 to-secondary">
+      <div className="container mx-auto p-4 md:p-6 space-y-6 animate-fade-in">
+        {/* Page Header */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="space-y-2">
+            <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-primary to-primary-glow bg-clip-text text-transparent">
+              Timetable Analytics Hub
+            </h1>
+            <p className="text-muted-foreground text-sm md:text-base">
+              Real-time analytics and insights for the AI timetable system
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <Link to="/generate">
+              <Button size="lg" variant="premium" className="gap-2 w-full sm:w-auto">
+                <Sparkles className="w-4 h-4" />
+                Generate Timetable
               </Button>
             </Link>
-            <Link to="/staff">
-              <Button variant="outline" className="w-full justify-start gap-2">
-                <UserCheck className="w-4 h-4" />
-                Manage Staff
+            <Link to="/student-dashboard">
+              <Button size="lg" variant="info" className="gap-2 w-full sm:w-auto">
+                <User className="w-4 h-4" />
+                Student Hub
               </Button>
             </Link>
-            <Link to="/sections">
-              <Button variant="outline" className="w-full justify-start gap-2">
-                <Users className="w-4 h-4" />
-                Manage Sections
-              </Button>
-            </Link>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Clock className="w-5 h-5 text-primary" />
-              Recent Activity
-            </CardTitle>
-            <CardDescription>
-              Latest updates and changes
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {loading && <Skeleton className="h-24 w-full" />}
-            {!loading && (
-              <div className="space-y-3 max-h-72 overflow-y-auto pr-1" role="list" aria-label="Recent activity list">
-                {activities.length === 0 && <p className="text-xs text-muted-foreground">No recent activity.</p>}
-                {activities.map((a,i) => (
-                  <div key={i} role="listitem" className="flex items-center gap-3 p-3 rounded-lg bg-muted/50">
-                    <div className={`w-2 h-2 rounded-full ${a.type==='success' ? 'bg-success' : a.type==='warning' ? 'bg-warning' : 'bg-info'}`}></div>
-                    <div className="text-sm min-w-0">
-                      <p className="font-medium truncate" title={a.message + (a.meta?` (${a.meta})`: '')}>{a.message}{a.meta && <span className="text-muted-foreground"> · {a.meta}</span>}</p>
-                      <p className="text-muted-foreground text-[11px]">{new Date(a.ts).toLocaleString()}</p>
+        {/* Stats Grid */}
+        {loading || !counts ? LoadingGrid : (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <StatsCard title="Total Subjects" value={counts.subjects} description="Active subjects" icon={BookOpen} color="info" />
+            <StatsCard title="Sections" value={counts.sections} description="All sections" icon={Users} color="success" />
+            <StatsCard title="Departments" value={counts.departments} description="Academic units" icon={Building2} color="warning" />
+            <StatsCard title="Available Rooms" value={counts.rooms} description="Classrooms & labs" icon={MapPin} />
+          </div>
+        )}
+
+        {/* Additional Stats */}
+        {loading || !counts ? (
+          <div className="grid gap-4 md:grid-cols-3">
+            {Array.from({length:3}).map((_,i)=>(<Skeleton key={i} className="h-32 w-full" />))}
+          </div>
+        ) : (
+          <div className="grid gap-4 md:grid-cols-3">
+            <StatsCard title="Faculty Members" value={counts.staff} description="Teaching staff" icon={UserCheck} color="success" />
+            <StatsCard title="Generated Timetables" value={counts.timetablesGenerated} description="Sections with schedules" icon={Calendar} color="info" />
+            <StatsCard title="Slot Utilization" value={`${efficiency}%`} description={`${counts.filledSlots}/${Math.max(counts.timetableSlots,1)} slots used`} icon={TrendingUp} color={efficiency>70? 'success' : 'warning'} />
+          </div>
+        )}
+
+        {/* Quick Actions & Activity */}
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card className="shadow-card border-0 bg-card/50 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-primary" />
+                Quick Actions
+              </CardTitle>
+              <CardDescription>
+                Frequently used management tools
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Link to="/subjects">
+                <Button variant="outline" className="w-full justify-start gap-2 hover:shadow-md">
+                  <BookOpen className="w-4 h-4" />
+                  Manage Subjects
+                </Button>
+              </Link>
+              <Link to="/staff">
+                <Button variant="outline" className="w-full justify-start gap-2 hover:shadow-md">
+                  <UserCheck className="w-4 h-4" />
+                  Manage Staff
+                </Button>
+              </Link>
+              <Link to="/sections">
+                <Button variant="outline" className="w-full justify-start gap-2 hover:shadow-md">
+                  <Users className="w-4 h-4" />
+                  Manage Sections
+                </Button>
+              </Link>
+              <Link to="/student-dashboard">
+                <Button variant="success" className="w-full justify-start gap-2">
+                  <User className="w-4 h-4" />
+                  Student Dashboard
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+
+          <Card className="shadow-card border-0 bg-card/50 backdrop-blur-sm">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary" />
+                Recent Activity
+              </CardTitle>
+              <CardDescription>
+                Latest updates and changes
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {loading && <Skeleton className="h-24 w-full" />}
+              {!loading && (
+                <div className="space-y-3 max-h-72 overflow-y-auto pr-1" role="list" aria-label="Recent activity list">
+                  {activities.length === 0 && <p className="text-xs text-muted-foreground">No recent activity.</p>}
+                  {activities.map((a,i) => (
+                    <div key={i} role="listitem" className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-r from-muted/30 to-muted/20 hover:shadow-sm transition-all">
+                      <div className={`w-3 h-3 rounded-full ${a.type==='success' ? 'bg-success animate-pulse' : a.type==='warning' ? 'bg-warning animate-pulse' : 'bg-info animate-pulse'}`}></div>
+                      <div className="text-sm min-w-0">
+                        <p className="font-medium truncate" title={a.message + (a.meta?` (${a.meta})`: '')}>{a.message}{a.meta && <span className="text-muted-foreground"> · {a.meta}</span>}</p>
+                        <p className="text-muted-foreground text-[11px]">{new Date(a.ts).toLocaleString()}</p>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {error && <p className="text-xs text-destructive">{error}</p>}
-          </CardContent>
-        </Card>
+                  ))}
+                </div>
+              )}
+              {error && <p className="text-xs text-destructive">{error}</p>}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
