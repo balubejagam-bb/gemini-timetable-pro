@@ -360,10 +360,10 @@ export default function GenerateTimetable() {
                       return (
                         <div
                           key={dept.id}
-                          className={`p-4 border rounded-lg cursor-pointer transition-all hover:shadow-sm ${
+                          className={`p-4 border-2 rounded-xl cursor-pointer transition-all duration-300 hover:shadow-lg hover:scale-105 ${
                             selectedDepartments.includes(dept.id)
-                              ? "border-primary bg-primary/5"
-                              : "border-border"
+                              ? "border-blue-300 bg-gradient-to-br from-blue-50 to-blue-100 shadow-blue-100"
+                              : "border-muted-foreground/20 bg-gradient-to-br from-background to-muted/30"
                           }`}
                           onClick={() => toggleDepartment(dept.id)}
                         >
@@ -374,8 +374,8 @@ export default function GenerateTimetable() {
                               className="mt-1"
                             />
                             <div className="flex-1">
-                              <p className="font-medium">{dept.name}</p>
-                              <p className="text-xs text-muted-foreground">Code: {dept.code}</p>
+                              <p className="font-semibold text-lg">{dept.name}</p>
+                              <p className="text-sm text-blue-600 font-medium">Code: {dept.code}</p>
                               <p className="text-xs text-muted-foreground">Sections this semester: {deptSections.length}</p>
                             </div>
                           </div>

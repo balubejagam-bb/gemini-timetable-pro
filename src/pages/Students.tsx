@@ -41,7 +41,40 @@ export default function Students() {
   useEffect(() => {
     fetchStudents();
     fetchPersonalizedTimetables();
+    fetchDepartments();
+    fetchSections();
+    fetchSubjects();
   }, []);
+
+  const fetchDepartments = async () => {
+    try {
+      const { data, error } = await supabase.from('departments').select('*');
+      if (error) throw error;
+      setDepartments(data || []);
+    } catch (error) {
+      console.error('Error fetching departments:', error);
+    }
+  };
+
+  const fetchSections = async () => {
+    try {
+      const { data, error } = await supabase.from('sections').select('*');
+      if (error) throw error;
+      setAllSections(data || []);
+    } catch (error) {
+      console.error('Error fetching sections:', error);
+    }
+  };
+
+  const fetchSubjects = async () => {
+    try {
+      const { data, error } = await supabase.from('subjects').select('*');
+      if (error) throw error;
+      setAllSubjects(data || []);
+    } catch (error) {
+      console.error('Error fetching subjects:', error);
+    }
+  };
 
   const fetchStudents = async () => {
     try {
@@ -78,15 +111,42 @@ export default function Students() {
     }
   };
 
-  const generatePersonalizedTimetable = async (studentId: string) => {
+  const [showGenerationDialog, setShowGenerationDialog] = useState(false);
+  const [selectedStudentForGeneration, setSelectedStudentForGeneration] = useState<Student | null>(null);
+  const [departments, setDepartments] = useState<{id: string; name: string; code: string}[]>([]);
+  const [selectedDepartments, setSelectedDepartments] = useState<string[]>([]);
+  const [selectedSemesterForGen, setSelectedSemesterForGen] = useState("1");
+  const [selectedSections, setSelectedSections] = useState<string[]>([]);
+  const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+  const [allSections, setAllSections] = useState<{id: string; name: string; department_id: string; semester: number}[]>([]);
+  const [allSubjects, setAllSubjects] = useState<{id: string; name: string; code: string; department_id: string; semester: number}[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const generatePersonalizedTimetable = async (student: Student) => {
+    setSelectedStudentForGeneration(student);
+    setSelectedSemesterForGen(student.semester.toString());
+    if (student.department_id) {
+      setSelectedDepartments([student.department_id]);
+    }
+    setShowGenerationDialog(true);
+  };
+
+  const handleGeneration = async () => {
+    if (!selectedStudentForGeneration) return;
+    
     try {
+      setIsGenerating(true);
       toast.loading('Generating personalized timetable...');
       
-      // Call the AI timetable generation edge function
+      // Call the AI timetable generation edge function with selected options
       const { data, error } = await supabase.functions.invoke('generate-timetable-ai', {
         body: { 
-          student_id: studentId,
-          type: 'personalized'
+          student_id: selectedStudentForGeneration.id,
+          type: 'personalized',
+          selectedDepartments,
+          selectedSemester: parseInt(selectedSemesterForGen),
+          selectedSections: selectedSections.length > 0 ? selectedSections : undefined,
+          selectedSubjects: selectedSubjects.length > 0 ? selectedSubjects : undefined
         }
       });
 
@@ -94,9 +154,12 @@ export default function Students() {
 
       toast.success('Personalized timetable generated successfully!');
       fetchPersonalizedTimetables();
+      setShowGenerationDialog(false);
     } catch (error: any) {
       console.error('Error generating personalized timetable:', error);
       toast.error(error.message || 'Failed to generate personalized timetable');
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -242,7 +305,7 @@ export default function Students() {
                       )}
                       
                       <Button
-                        onClick={() => generatePersonalizedTimetable(student.id)}
+                        onClick={() => generatePersonalizedTimetable(student)}
                         disabled={loading}
                         className="w-full bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
                         size="sm"
@@ -301,7 +364,7 @@ export default function Students() {
                           </td>
                           <td className="p-4">
                             <Button
-                              onClick={() => generatePersonalizedTimetable(student.id)}
+                              onClick={() => generatePersonalizedTimetable(student)}
                               disabled={loading}
                               size="sm"
                               className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
@@ -330,6 +393,125 @@ export default function Students() {
               </p>
             </CardContent>
           </Card>
+        )}
+
+        {/* Generation Dialog */}
+        {showGenerationDialog && selectedStudentForGeneration && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+            <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+              <CardHeader>
+                <CardTitle>Generate Timetable for {selectedStudentForGeneration.name}</CardTitle>
+                <p className="text-sm text-muted-foreground">Configure generation options</p>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Semester Selection */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Semester</label>
+                  <select 
+                    value={selectedSemesterForGen} 
+                    onChange={(e) => setSelectedSemesterForGen(e.target.value)}
+                    className="w-full p-2 border rounded-md"
+                  >
+                    {[1,2,3,4,5,6,7,8].map(sem => (
+                      <option key={sem} value={sem}>Semester {sem}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Department Selection */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Departments ({selectedDepartments.length} selected)</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                    {departments.map(dept => (
+                      <label key={dept.id} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-muted/50">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedDepartments.includes(dept.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedDepartments([...selectedDepartments, dept.id]);
+                            } else {
+                              setSelectedDepartments(selectedDepartments.filter(id => id !== dept.id));
+                            }
+                          }}
+                        />
+                        <span className="text-sm">{dept.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Section Selection */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Sections (Optional - {selectedSections.length} selected)</label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-32 overflow-y-auto">
+                    {allSections
+                      .filter(sec => sec.semester.toString() === selectedSemesterForGen && 
+                        (selectedDepartments.length === 0 || selectedDepartments.includes(sec.department_id)))
+                      .map(section => (
+                      <label key={section.id} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-muted/50">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedSections.includes(section.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedSections([...selectedSections, section.id]);
+                            } else {
+                              setSelectedSections(selectedSections.filter(id => id !== section.id));
+                            }
+                          }}
+                        />
+                        <span className="text-xs">{section.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Subject Selection */}
+                <div>
+                  <label className="text-sm font-medium mb-2 block">Subjects (Optional - {selectedSubjects.length} selected)</label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                    {allSubjects
+                      .filter(subj => subj.semester.toString() === selectedSemesterForGen && 
+                        (selectedDepartments.length === 0 || selectedDepartments.includes(subj.department_id)))
+                      .map(subject => (
+                      <label key={subject.id} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-muted/50">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedSubjects.includes(subject.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedSubjects([...selectedSubjects, subject.id]);
+                            } else {
+                              setSelectedSubjects(selectedSubjects.filter(id => id !== subject.id));
+                            }
+                          }}
+                        />
+                        <span className="text-xs">{subject.name} ({subject.code})</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+              <div className="flex gap-2 p-6 pt-0">
+                <Button 
+                  onClick={handleGeneration} 
+                  disabled={isGenerating}
+                  className="flex-1 bg-gradient-to-r from-primary to-primary/80"
+                >
+                  <Sparkles className="w-4 h-4 mr-2" />
+                  {isGenerating ? 'Generating...' : 'Generate Timetable'}
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={() => setShowGenerationDialog(false)}
+                  disabled={isGenerating}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </Card>
+          </div>
         )}
       </div>
     </div>
