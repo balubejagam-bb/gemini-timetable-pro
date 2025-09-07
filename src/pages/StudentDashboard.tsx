@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { Search, Upload, Download, Plus, Users, Edit, Trash2 } from 'lucide-react';
 import { ViewToggle } from '@/components/ui/view-toggle';
+import { Checkbox } from "@/components/ui/checkbox";
+import { ClientTimetableGenerator } from "@/lib/timetableGenerator";
 
 interface Student {
   id: string;
@@ -34,6 +36,12 @@ export default function StudentDashboard() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [loading, setLoading] = useState(true);
+  const [allSubjects, setAllSubjects] = useState([]);
+  const [allStaff, setAllStaff] = useState([]);
+  const [selectedSubjects, setSelectedSubjects] = useState([]);
+  const [selectedStaffIds, setSelectedStaffIds] = useState([]);
+  const [showAllSubjects, setShowAllSubjects] = useState(true);
+  const [isGenerateDialogOpen, setIsGenerateDialogOpen] = useState(false);
 
   // Form state for adding/editing students
   const [studentForm, setStudentForm] = useState({
@@ -47,6 +55,17 @@ export default function StudentDashboard() {
   useEffect(() => {
     fetchStudents();
     fetchDepartments();
+  }, []);
+
+  useEffect(() => {
+    // Fetch all subjects and staff for selection
+    const fetchData = async () => {
+      const { data: subjData } = await supabase.from("subjects").select("id, name, code, department_id");
+      const { data: stfData } = await supabase.from("staff").select("id, name, department_id");
+      setAllSubjects(subjData || []);
+      setAllStaff(stfData || []);
+    };
+    fetchData();
   }, []);
 
   const fetchStudents = async () => {
@@ -234,6 +253,28 @@ export default function StudentDashboard() {
   const getDepartmentName = (departmentId?: string) => {
     const dept = departments.find(d => d.id === departmentId);
     return dept ? dept.name : 'No Department';
+  };
+
+  // Timetable generation handler
+  const handleGenerateTimetable = async () => {
+    try {
+      const generator = new ClientTimetableGenerator();
+      const departmentIds = departments.map(d => d.id); // or filter as needed
+      const semester = 1; // or get from UI
+      const result = await generator.generateTimetable(departmentIds, semester, {
+        advancedMode: true,
+        subjects: selectedSubjects,
+        staff: selectedStaffIds
+      });
+      if (result.success) {
+        toast.success(`Timetable generated! Entries: ${result.entriesCount}`);
+      } else {
+        toast.error(result.error || "Failed to generate timetable");
+      }
+    } catch (error) {
+      toast.error("Error generating timetable");
+      console.error(error);
+    }
   };
 
   if (loading) {
@@ -555,6 +596,96 @@ export default function StudentDashboard() {
             </form>
           </DialogContent>
         </Dialog>
+
+        {/* Timetable Generation Popup */}
+        <Dialog open={isGenerateDialogOpen} onOpenChange={setIsGenerateDialogOpen}>
+          <DialogTrigger asChild>
+            <Button variant="default">Generate Timetable (AI)</Button>
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Generate Timetable</DialogTitle>
+            </DialogHeader>
+            {/* Subject Selection */}
+            <div className="mb-6">
+              <h4 className="text-sm font-semibold mb-2">Subjects (All Departments)</h4>
+              <label className="flex items-center gap-2 text-xs font-normal mb-2">
+                <Checkbox checked={showAllSubjects} onCheckedChange={v => setShowAllSubjects(!!v)} />
+                <span>Show all subjects (cross-department)</span>
+              </label>
+              <div className="grid gap-2 md:grid-cols-3 max-h-48 overflow-y-auto pr-1">
+                {allSubjects.map(sub => (
+                  <label key={sub.id} className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedSubjects.includes(sub.id)?'bg-primary/10 border-primary':'border-border'}`}
+                    onClick={() => setSelectedSubjects(selectedSubjects.includes(sub.id) ? selectedSubjects.filter(id => id !== sub.id) : [...selectedSubjects, sub.id])}>
+                    <Checkbox checked={selectedSubjects.includes(sub.id)} onCheckedChange={() => {}} />
+                    <span className="truncate">{sub.name} <span className="font-semibold">({sub.code})</span></span>
+                    <span className="ml-2 text-muted-foreground">Dept: {departments.find(d => d.id === sub.department_id)?.name || 'Unknown'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            {/* Staff Selection */}
+            <div className="mb-6">
+              <h4 className="text-sm font-semibold mb-2">Staff (All Departments)</h4>
+              <div className="grid gap-2 md:grid-cols-3 max-h-44 overflow-y-auto pr-1">
+                {allStaff.map(st => (
+                  <label key={st.id} className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedStaffIds.includes(st.id)?'bg-primary/10 border-primary':'border-border'}`}
+                    onClick={() => setSelectedStaffIds(selectedStaffIds.includes(st.id) ? selectedStaffIds.filter(id => id !== st.id) : [...selectedStaffIds, st.id])}>
+                    <Checkbox checked={selectedStaffIds.includes(st.id)} onCheckedChange={() => {}} />
+                    <span className="truncate" title={st.name}>{st.name}</span>
+                    <span className="ml-2 text-muted-foreground">Dept: {departments.find(d => d.id === st.department_id)?.name || 'Unknown'}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <Button onClick={handleGenerateTimetable} variant="default" className="w-full">Generate Timetable</Button>
+          </DialogContent>
+        </Dialog>
+
+        {/* Timetable Generation Buttons */}
+        <div className="flex flex-wrap gap-2 mb-4">
+          <Button onClick={handleGenerateTimetable} variant="default">Generate Timetable (AI)</Button>
+          <Button variant="outline">View Timetables</Button>
+          <Button variant="outline">College Timings</Button>
+          <Button variant="outline">Subjects</Button>
+          <Button variant="outline">Sections</Button>
+          <Button variant="outline">Departments</Button>
+          <Button variant="outline">Rooms</Button>
+          <Button variant="outline">Staff</Button>
+        </div>
+
+        {/* Subject Selection */}
+        <div className="mb-6">
+          <h4 className="text-sm font-semibold mb-2">Subjects (All Departments)</h4>
+          <label className="flex items-center gap-2 text-xs font-normal mb-2">
+            <Checkbox checked={showAllSubjects} onCheckedChange={v => setShowAllSubjects(!!v)} />
+            <span>Show all subjects (cross-department)</span>
+          </label>
+          <div className="grid gap-2 md:grid-cols-3 max-h-48 overflow-y-auto pr-1">
+            {allSubjects.map(sub => (
+              <label key={sub.id} className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedSubjects.includes(sub.id)?'bg-primary/10 border-primary':'border-border'}`}
+                onClick={() => setSelectedSubjects(selectedSubjects.includes(sub.id) ? selectedSubjects.filter(id => id !== sub.id) : [...selectedSubjects, sub.id])}>
+                <Checkbox checked={selectedSubjects.includes(sub.id)} onCheckedChange={() => {}} />
+                <span className="truncate">{sub.name} <span className="font-semibold">({sub.code})</span></span>
+                <span className="ml-2 text-muted-foreground">Dept: {departments.find(d => d.id === sub.department_id)?.name || 'Unknown'}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        {/* Staff Selection */}
+        <div className="mb-6">
+          <h4 className="text-sm font-semibold mb-2">Staff (All Departments)</h4>
+          <div className="grid gap-2 md:grid-cols-3 max-h-44 overflow-y-auto pr-1">
+            {allStaff.map(st => (
+              <label key={st.id} className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedStaffIds.includes(st.id)?'bg-primary/10 border-primary':'border-border'}`}
+                onClick={() => setSelectedStaffIds(selectedStaffIds.includes(st.id) ? selectedStaffIds.filter(id => id !== st.id) : [...selectedStaffIds, st.id])}>
+                <Checkbox checked={selectedStaffIds.includes(st.id)} onCheckedChange={() => {}} />
+                <span className="truncate" title={st.name}>{st.name}</span>
+                <span className="ml-2 text-muted-foreground">Dept: {departments.find(d => d.id === st.department_id)?.name || 'Unknown'}</span>
+              </label>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
-import { Download, Edit3, RefreshCw, Calendar, Grid, Eye, Search, Printer, RotateCcw, User, X } from "lucide-react";
+import { Download, Edit3, RefreshCw, Calendar, Grid, Eye, Search, Printer, RotateCcw, User, X, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -471,6 +471,12 @@ export default function TimetableView() {
     )
   );
 
+  // Extend search to student timetables
+  const filteredPersonalizedTimetables = personalizedTimetables.filter(timetable =>
+    timetable.students?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    timetable.students?.roll_no?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div className="space-y-4 md:space-y-6 animate-fade-in">
       {/* Page Header - Mobile responsive */}
@@ -719,25 +725,27 @@ export default function TimetableView() {
               </div>
 
               {/* Student Timetables Section */}
-              {personalizedTimetables.length > 0 && (
+              {filteredPersonalizedTimetables.length > 0 && (
                 <Card className="mt-8">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <User className="w-5 h-5" />
-                      Individual Student Timetables ({personalizedTimetables.length})
+                      Individual Student Timetables ({filteredPersonalizedTimetables.length})
                     </CardTitle>
                     <CardDescription>AI-generated personalized timetables for students</CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                      {personalizedTimetables.map((timetable) => (
+                      {filteredPersonalizedTimetables.map((timetable) => (
                         <Card 
                           key={timetable.id} 
                           className="p-4 cursor-pointer hover:shadow-md transition-shadow"
                           onClick={() => setPopupData({
                             title: `${timetable.students?.name || 'Unknown Student'} - ${timetable.students?.roll_no || ''}`,
                             entries: timetable.timetable_json,
-                            type: 'student'
+                            type: 'student',
+                            timetableId: timetable.id,
+                            generatedAt: timetable.generated_at
                           })}
                         >
                           <div className="flex items-start justify-between mb-2">
@@ -780,14 +788,41 @@ export default function TimetableView() {
                   {popupData.type === 'student' ? 'AI-Generated Individual Timetable' : 'Section Timetable'}
                 </CardDescription>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setPopupData(null)}
-                className="h-8 w-8 p-0"
-              >
-                <X className="w-4 h-4" />
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={async () => {
+                    if (window.confirm('Are you sure you want to delete this timetable?')) {
+                      if (popupData.type === 'student') {
+                        await supabase.from('personalized_timetables').delete().eq('id', popupData.timetableId);
+                        toast({ title: 'Deleted', description: 'Student timetable deleted.' });
+                        setPopupData(null);
+                        fetchPersonalizedTimetables();
+                      } else {
+                        // Section timetable: delete all entries for this section/semester
+                        const sectionId = selectedSection;
+                        const semester = selectedSemester;
+                        await supabase.from('timetables').delete().eq('section_id', sectionId).eq('semester', semester);
+                        toast({ title: 'Deleted', description: 'Section timetable deleted.' });
+                        setPopupData(null);
+                        fetchAllTimetables();
+                      }
+                    }
+                  }}
+                  className="h-8 w-8 p-0"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPopupData(null)}
+                  className="h-8 w-8 p-0"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               {popupData.type === 'student' ? (
@@ -861,6 +896,12 @@ export default function TimetableView() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-6 mt-2">
+            <Input
+              type="date"
+              placeholder="Filter by generation date"
+              onChange={e => setSearchTerm(e.target.value)}
+              className="max-w-xs mb-2"
+            />
             <div className="flex gap-2 flex-wrap">
               <Button type="button" size="sm" variant="outline" onClick={selectAllExports}>Select All</Button>
               <Button type="button" size="sm" variant="outline" onClick={clearAllExports}>Clear All</Button>
