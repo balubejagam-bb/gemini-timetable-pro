@@ -115,7 +115,7 @@ export default function Dashboard() {
                 Generate Timetable
               </Button>
             </Link>
-            <Link to="/student-dashboard">
+            <Link to="/students">
               <Button size="lg" variant="info" className="gap-2 w-full sm:w-auto">
                 <User className="w-4 h-4" />
                 Student Hub
@@ -178,7 +178,7 @@ export default function Dashboard() {
                   Manage Sections
                 </Button>
               </Link>
-              <Link to="/student-dashboard">
+              <Link to="/students">
                 <Button variant="success" className="w-full justify-start gap-2">
                   <User className="w-4 h-4" />
                   Student Dashboard

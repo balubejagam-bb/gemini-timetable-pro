@@ -27,6 +27,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 const navigationItems = [
   { title: "Dashboard", url: "/", icon: GraduationCap },
+  { title: "Students", url: "/students", icon: Users },
   { title: "Generate Timetable", url: "/generate", icon: Sparkles },
   { title: "View Timetables", url: "/timetables", icon: Calendar },
   { title: "College Timings", url: "/timings", icon: Clock },
