@@ -36,6 +36,7 @@ const navigationItems = [
   { title: "Rooms", url: "/rooms", icon: MapPin },
   { title: "Staff", url: "/staff", icon: UserCheck },
   { title: "Settings", url: "/settings", icon: Settings },
+  { title: "Student", url: "/student", icon: GraduationCap },
 ];
 
 export function AppSidebar() {

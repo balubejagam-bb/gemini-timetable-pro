@@ -14,6 +14,7 @@ import Rooms from "./pages/Rooms";
 import Staff from "./pages/Staff";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import StudentDashboard from "./pages/StudentDashboard";
 import { AppLayout } from "./components/layout/AppLayout";
 
 const queryClient = new QueryClient();
@@ -35,6 +36,7 @@ const App = () => (
           <Route path="/rooms" element={<AppLayout><Rooms /></AppLayout>} />
           <Route path="/staff" element={<AppLayout><Staff /></AppLayout>} />
           <Route path="/settings" element={<AppLayout><Settings /></AppLayout>} />
+          <Route path="/student" element={<AppLayout><StudentDashboard /></AppLayout>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
