@@ -37,7 +37,6 @@ const App = () => (
           <Route path="/rooms" element={<AppLayout><Rooms /></AppLayout>} />
           <Route path="/staff" element={<AppLayout><Staff /></AppLayout>} />
           <Route path="/settings" element={<AppLayout><Settings /></AppLayout>} />
-          <Route path="/student" element={<AppLayout><StudentDashboard /></AppLayout>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="/students" element={<AppLayout><Students /></AppLayout>} />
           <Route path="/student-db" element={<AppLayout><StudentDashboard /></AppLayout>} />

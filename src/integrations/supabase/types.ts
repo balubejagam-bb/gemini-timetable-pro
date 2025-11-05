@@ -225,50 +225,6 @@ export type Database = {
           },
         ]
       }
-      students: {
-        Row: {
-          id: string
-            created_at: string
-            updated_at: string
-            roll_no: string | null
-            register_number: string | null
-            name: string
-            email: string | null
-            semester: number | null
-            department_id: string | null
-        }
-        Insert: {
-          id?: string
-          created_at?: string
-          updated_at?: string
-          roll_no?: string | null
-          register_number?: string | null
-          name: string
-          email?: string | null
-          semester?: number | null
-          department_id?: string | null
-        }
-        Update: {
-          id?: string
-          created_at?: string
-          updated_at?: string
-          roll_no?: string | null
-          register_number?: string | null
-          name?: string
-          email?: string | null
-          semester?: number | null
-          department_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "students_department_id_fkey"
-            columns: ["department_id"]
-            isOneToOne: false
-            referencedRelation: "departments"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       subjects: {
         Row: {
           code: string

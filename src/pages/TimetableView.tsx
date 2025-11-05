@@ -76,8 +76,6 @@ interface TimetablePopupData {
   title: string;
   entries: TimetableEntry[] | any;
   type: 'section' | 'student';
-  timetableId?: string;
-  generatedAt?: string;
 }
 
 export default function TimetableView() {
@@ -295,16 +293,7 @@ export default function TimetableView() {
   };
 
   const handlePrint = () => {
-    // Hide non-printable elements before printing
-    const controls = document.querySelectorAll('.no-print');
-    controls.forEach(el => (el as HTMLElement).style.display = 'none');
-    
     window.print();
-    
-    // Restore after printing
-    setTimeout(() => {
-      controls.forEach(el => (el as HTMLElement).style.display = '');
-    }, 100);
   };
 
   // Inject temporary styles to improve PDF rendering (prevent overlapping)
@@ -328,11 +317,11 @@ export default function TimetableView() {
     if (style) style.remove();
   };
 
-  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, isPopup = false) => (
-    <Card className={`${!isPopup ? 'mb-6' : ''} timetable-grid-export`} data-export-key={exportKey || ''}>
+  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string) => (
+    <Card className="mb-6 timetable-grid-export" data-export-key={exportKey || ''}>
       <CardHeader>
         <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
-        <CardDescription>{entries.length} schedule entries</CardDescription>
+        <CardDescription>{entries.length} entries loaded</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
@@ -365,9 +354,9 @@ export default function TimetableView() {
                   }
 
                   return (
-                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-2 border rounded-lg hover:shadow-md transition-all duration-200 pdf-cell bg-gradient-to-br from-blue-50 to-blue-100 shadow-sm">
+                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-2 border rounded-lg hover:shadow-md transition-all duration-200 cursor-pointer pdf-cell bg-gradient-to-br from-blue-50 to-blue-100">
                       <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-1 text-[10px] pdf-badge shadow-sm`}>{entry.subjects.code}</Badge>
-                      <p className="text-[10px] md:text-xs font-semibold break-words w-full leading-tight">{entry.subjects.name}</p>
+                      <p className="text-[10px] md:text-xs font-medium break-words w-full leading-tight">{entry.subjects.name}</p>
                       <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">{entry.staff.name}</p>
                       <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">Room: {entry.rooms.room_number}</p>
                     </div>
@@ -558,7 +547,7 @@ export default function TimetableView() {
 
         <TabsContent value="single" className="space-y-6">
           {/* Filters for Single View */}
-          <Card className="no-print">
+          <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Calendar className="w-5 h-5" />
@@ -651,7 +640,7 @@ export default function TimetableView() {
 
         <TabsContent value="all" className="space-y-6">
           {/* Search bar for all timetables */}
-          <Card className="no-print">
+          <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <Search className="w-5 h-5" />
@@ -686,7 +675,7 @@ export default function TimetableView() {
           ) : (
             <div className="space-y-6">
               {/* List view of all timetables */}
-              <Card className="no-print">
+              <Card>
                 <CardHeader>
                   <CardTitle>All Timetables ({Object.keys(filteredTimetablesData).length} departments)</CardTitle>
                 </CardHeader>
@@ -737,7 +726,7 @@ export default function TimetableView() {
 
               {/* Student Timetables Section */}
               {filteredPersonalizedTimetables.length > 0 && (
-                <Card className="mt-8 no-print">
+                <Card className="mt-8">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <User className="w-5 h-5" />
@@ -805,15 +794,15 @@ export default function TimetableView() {
                   size="sm"
                   onClick={async () => {
                     if (window.confirm('Are you sure you want to delete this timetable?')) {
-                      if (popupData.type === 'student' && popupData.timetableId) {
-                        await (supabase as any).from('personalized_timetables').delete().eq('id', popupData.timetableId);
+                      if (popupData.type === 'student') {
+                        await supabase.from('personalized_timetables').delete().eq('id', popupData.timetableId);
                         toast({ title: 'Deleted', description: 'Student timetable deleted.' });
                         setPopupData(null);
                         fetchPersonalizedTimetables();
                       } else {
                         // Section timetable: delete all entries for this section/semester
                         const sectionId = selectedSection;
-                        const semester = parseInt(selectedSemester);
+                        const semester = selectedSemester;
                         await supabase.from('timetables').delete().eq('section_id', sectionId).eq('semester', semester);
                         toast({ title: 'Deleted', description: 'Section timetable deleted.' });
                         setPopupData(null);

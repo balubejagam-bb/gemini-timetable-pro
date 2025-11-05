@@ -278,7 +278,7 @@ Generate entries for ALL sections and subjects. Each subject should appear multi
     console.log('Parsed timetable entries:', timetableEntries.length);
 
     // Validate timetable entries
-    const validatedEntries = timetableEntries.filter((entry: any) => {
+    const validatedEntries = timetableEntries.filter(entry => {
       return entry.section_id && 
              entry.subject_id && 
              entry.staff_id && 
@@ -326,14 +326,13 @@ Generate entries for ALL sections and subjects. Each subject should appear multi
 
   } catch (error) {
     console.error('Edge function error:', error);
-    const err = error as Error;
-    console.error('Error stack:', err.stack);
+    console.error('Error stack:', error.stack);
     
     return new Response(
       JSON.stringify({ 
         success: false, 
-        error: err.message,
-        details: err.stack 
+        error: error.message,
+        details: error.stack 
       }),
       {
         status: 500,
