@@ -136,37 +136,51 @@ export default function Students() {
 
     try {
       setIsGenerating(true);
-      toast.loading('Generating personalized timetable...');
+      toast.loading('Generating personalized timetable with AI...');
 
-      // Prepare prompt for Gemini model
-      const prompt = {
-        student: selectedStudentForGeneration,
-        departments: selectedDepartments,
-        semester: parseInt(selectedSemesterForGen),
-        sections: selectedSections.length > 0 ? selectedSections : undefined,
-        subjects: selectedSubjects.length > 0 ? selectedSubjects : undefined
-      };
+      // Use the existing ClientTimetableGenerator to generate timetable
+      const { ClientTimetableGenerator } = await import('@/lib/timetableGenerator');
+      const generator = new ClientTimetableGenerator();
+      
+      const result = await generator.generateTimetable(
+        selectedDepartments,
+        parseInt(selectedSemesterForGen),
+        {
+          advancedMode: true,
+          sections: selectedSections.length > 0 ? selectedSections : undefined,
+          subjects: selectedSubjects.length > 0 ? selectedSubjects : undefined
+        }
+      );
 
-      // Call Gemini model (replace with your Gemini API integration)
-      // Example: import { generateTimetableWithGemini } from '@/lib/timetableGenerator';
-      // const timetableResult = await generateTimetableWithGemini(prompt);
-      // For demonstration, we'll mock the result:
-      const timetableResult = await window.generateTimetableWithGemini
-        ? await window.generateTimetableWithGemini(prompt)
-        : { timetable: { /* ...mock timetable... */ }, model_version: 'gemini-pro' };
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to generate timetable');
+      }
 
-      // Save generated timetable to Supabase
-      const { error } = await supabase.from('personalized_timetables').insert({
+      // Fetch the generated timetable entries for this student
+      const { data: timetableEntries, error: fetchError } = await supabase
+        .from('timetables')
+        .select('*')
+        .eq('semester', parseInt(selectedSemesterForGen))
+        .in('section_id', selectedSections.length > 0 ? selectedSections : []);
+
+      if (fetchError) throw fetchError;
+
+      // Save personalized timetable to database
+      const { error: insertError } = await (supabase as any).from('personalized_timetables').insert({
         student_id: selectedStudentForGeneration.id,
-        timetable_json: timetableResult.timetable,
+        timetable_json: timetableEntries || [],
         generated_at: new Date().toISOString(),
-        model_version: timetableResult.model_version || 'gemini-pro'
+        model_version: 'gemini-2.5-flash'
       });
-      if (error) throw error;
+      
+      if (insertError) throw insertError;
 
       toast.success('Personalized timetable generated successfully!');
       fetchPersonalizedTimetables();
       setShowGenerationDialog(false);
+      setSelectedDepartments([]);
+      setSelectedSections([]);
+      setSelectedSubjects([]);
     } catch (error: any) {
       console.error('Error generating personalized timetable:', error);
       toast.error(error.message || 'Failed to generate personalized timetable');
