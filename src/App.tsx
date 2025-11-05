@@ -14,10 +14,7 @@ import Rooms from "./pages/Rooms";
 import Staff from "./pages/Staff";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
-<<<<<<< HEAD
-=======
 import Students from "./pages/Students";
->>>>>>> 83fb3185b21a4003056fc3c30f9bf395937e4dd5
 import StudentDashboard from "./pages/StudentDashboard";
 import { AppLayout } from "./components/layout/AppLayout";
 
