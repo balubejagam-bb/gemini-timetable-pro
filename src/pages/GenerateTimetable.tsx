@@ -137,6 +137,16 @@ export default function GenerateTimetable() {
       }
     }
 
+    // Validate sections are selected
+    if (selectedSections.length === 0) {
+      toast({
+        title: "Sections Required",
+        description: "Please select at least one section to generate timetables for.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setIsGenerating(true);
     setProgress(0);
 
@@ -274,10 +284,10 @@ export default function GenerateTimetable() {
     }
   };
 
-  // Auto-update selected sections when semester or departments change
-  useEffect(()=>{
-    setSelectedSections(filteredAutoSections.map(s=>s.id));
-  }, [filteredAutoSections]);
+  // Auto-update selected sections when semester or departments change (removed - now manual)
+  // useEffect(()=>{
+  //   setSelectedSections(filteredAutoSections.map(s=>s.id));
+  // }, [filteredAutoSections]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -398,13 +408,27 @@ export default function GenerateTimetable() {
               {/* Sections (auto, read-only) */}
                 <div className="space-y-6">
                   <div>
-                    <h4 className="text-sm font-semibold mb-2">Sections (auto-selected)</h4>
-                    <div className="flex flex-wrap gap-2">
-                      {allSectionsSelectable.length === 0 && <span className="text-xs text-muted-foreground">Select a department to load sections.</span>}
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-semibold">Sections</h4>
+                      <div className="flex gap-2">
+                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('sections')}>Select All</Button>
+                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('sections')}>Clear</Button>
+                      </div>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-3 max-h-48 overflow-y-auto pr-1">
+                      {allSectionsSelectable.length === 0 && <span className="text-xs text-muted-foreground col-span-3">Select a department to load sections.</span>}
                       {allSectionsSelectable.map(sec => {
                         const deptName = deptNameMap[sec.department_id] || 'Dept';
                         return (
-                          <span key={sec.id} className="px-2 py-1 text-xs rounded border bg-muted/40" title={deptName}>{sec.name}-{deptName}</span>
+                          <label 
+                            key={sec.id} 
+                            className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedSections.includes(sec.id)?'bg-primary/10 border-primary':'border-border'}`}
+                            onClick={()=>toggleInList(sec.id, selectedSections, setSelectedSections)}
+                            title={`${sec.name} • ${deptName} • Semester ${sec.semester}`}
+                          >
+                            <Checkbox checked={selectedSections.includes(sec.id)} onCheckedChange={()=>{}} />
+                            <span className="truncate">{sec.name} - {deptName}</span>
+                          </label>
                         );
                       })}
                     </div>
@@ -553,6 +577,10 @@ export default function GenerateTimetable() {
               <CardTitle>Quick Stats</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
+              <div className="flex justify-between">
+                <span className="text-sm text-muted-foreground">Selected Sections</span>
+                <span className="font-medium">{selectedSections.length}</span>
+              </div>
               <div className="flex justify-between">
                 <span className="text-sm text-muted-foreground">Total Subjects</span>
                 <span className="font-medium">{stats.subjects}</span>

@@ -1,0 +1,17 @@
+.timetable-a4-page {
+  width: 210mm;
+  min-height: 297mm;
+  margin: 0 auto;
+}
+
+.timetable-time-column {
+  width: 100px;
+}
+
+.timetable-subject-code-column {
+  width: 120px;
+}
+
+.timetable-faculty-column {
+  width: 250px;
+}

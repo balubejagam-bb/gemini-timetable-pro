@@ -2,12 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Search, Sparkles, Users, Calendar, Clock } from 'lucide-react';
+import { Search, Sparkles, Users, Calendar, Clock, X, Eye, Download, Trash2 } from 'lucide-react';
 import { ViewToggle } from '@/components/ui/view-toggle';
 import { useNavigate } from 'react-router-dom';
+import { StudentTimetableGenerator } from '@/lib/timetableGenerator';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
+import { TimetableTemplate } from '@/components/TimetableTemplate';
 
 interface Student {
   id: string;
@@ -121,6 +125,30 @@ export default function Students() {
   const [allSections, setAllSections] = useState<{id: string; name: string; department_id: string; semester: number}[]>([]);
   const [allSubjects, setAllSubjects] = useState<{id: string; name: string; code: string; department_id: string; semester: number}[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [viewTimetableDialog, setViewTimetableDialog] = useState(false);
+  const [selectedTimetableForView, setSelectedTimetableForView] = useState<PersonalizedTimetable | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+  const timeSlots = [
+    "9:00-10:00",
+    "10:00-11:00",
+    "11:15-12:15",
+    "12:15-13:15",
+    "14:00-15:00",
+    "15:00-16:00"
+  ];
+
+  const getDefaultFreePeriod = (semester: number, dayIndex: number, timeSlotIndex: number) => {
+    // Alternate between Library and Internship based on semester and position
+    if (semester >= 5) {
+      // Higher semesters get more internship periods
+      return (dayIndex + timeSlotIndex) % 2 === 0 ? 'Internship' : 'Library Period';
+    } else {
+      // Lower semesters get more library periods
+      return (dayIndex + timeSlotIndex) % 3 === 0 ? 'Internship' : 'Library Period';
+    }
+  };
 
   const generatePersonalizedTimetable = async (student: Student) => {
     setSelectedStudentForGeneration(student);
@@ -136,39 +164,43 @@ export default function Students() {
 
     try {
       setIsGenerating(true);
-      toast.loading('Generating personalized timetable...');
+      toast.loading('Generating personalized timetable with AI...');
 
-      // Prepare prompt for Gemini model
-      const prompt = {
-        student: selectedStudentForGeneration,
-        departments: selectedDepartments,
-        semester: parseInt(selectedSemesterForGen),
-        sections: selectedSections.length > 0 ? selectedSections : undefined,
-        subjects: selectedSubjects.length > 0 ? selectedSubjects : undefined
-      };
+      // Use the StudentTimetableGenerator class
+      const generator = new StudentTimetableGenerator();
+      
+      const result = await generator.generateStudentTimetable(
+        selectedStudentForGeneration.id,
+        parseInt(selectedSemesterForGen),
+        selectedDepartments.length > 0 ? selectedDepartments : undefined,
+        selectedSections.length > 0 ? selectedSections : undefined,
+        selectedSubjects.length > 0 ? selectedSubjects : undefined
+      );
 
-      // Call Gemini model (replace with your Gemini API integration)
-      // Example: import { generateTimetableWithGemini } from '@/lib/timetableGenerator';
-      // const timetableResult = await generateTimetableWithGemini(prompt);
-      // For demonstration, we'll mock the result:
-      const timetableResult = await window.generateTimetableWithGemini
-        ? await window.generateTimetableWithGemini(prompt)
-        : { timetable: { /* ...mock timetable... */ }, model_version: 'gemini-pro' };
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to generate timetable');
+      }
 
       // Save generated timetable to Supabase
-      const { error } = await supabase.from('personalized_timetables').insert({
+      const { error } = await (supabase as any).from('personalized_timetables').insert({
         student_id: selectedStudentForGeneration.id,
-        timetable_json: timetableResult.timetable,
+        timetable_json: result.timetable,
         generated_at: new Date().toISOString(),
-        model_version: timetableResult.model_version || 'gemini-pro'
+        model_version: result.model_version || 'gemini-2.0-flash'
       });
+      
       if (error) throw error;
 
+      toast.dismiss();
       toast.success('Personalized timetable generated successfully!');
       fetchPersonalizedTimetables();
       setShowGenerationDialog(false);
+      setSelectedDepartments([]);
+      setSelectedSections([]);
+      setSelectedSubjects([]);
     } catch (error: any) {
       console.error('Error generating personalized timetable:', error);
+      toast.dismiss();
       toast.error(error.message || 'Failed to generate personalized timetable');
     } finally {
       setIsGenerating(false);
@@ -187,6 +219,162 @@ export default function Students() {
 
   const getLatestTimetable = (studentId: string) => {
     return personalizedTimetables.find(tt => tt.student_id === studentId);
+  };
+
+  const handleViewTimetable = (student: Student) => {
+    const timetable = getLatestTimetable(student.id);
+    if (timetable) {
+      setSelectedTimetableForView(timetable);
+      setViewTimetableDialog(true);
+    } else {
+      toast.error('No timetable found for this student');
+    }
+  };
+
+  const handleDeleteTimetable = async (studentId: string) => {
+    if (!window.confirm('Are you sure you want to delete this timetable?')) return;
+    
+    try {
+      const timetable = getLatestTimetable(studentId);
+      if (!timetable) return;
+
+      await (supabase as any).from('personalized_timetables').delete().eq('id', timetable.id);
+      toast.success('Timetable deleted successfully');
+      fetchPersonalizedTimetables();
+    } catch (error) {
+      console.error('Error deleting timetable:', error);
+      toast.error('Failed to delete timetable');
+    }
+  };
+
+  const handleDownloadTimetable = async (student: Student) => {
+    const timetable = getLatestTimetable(student.id);
+    if (!timetable) {
+      toast.error('No timetable found for this student');
+      return;
+    }
+
+    try {
+      setExporting(true);
+
+      // Convert timetable JSON to format for university template
+      const schedule: any = {};
+      const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+      
+      days.forEach(day => {
+        schedule[day] = {};
+      });
+
+      // Track rooms used in student's timetable
+      const roomSet = new Set<string>();
+
+      if (timetable.timetable_json && timetable.timetable_json.schedule) {
+        Object.entries(timetable.timetable_json.schedule).forEach(([day, slots]: [string, any]) => {
+          Object.entries(slots).forEach(([timeSlot, slotData]: [string, any]) => {
+            if (slotData && slotData.subject) {
+              const room = slotData.room || 'TBD';
+              if (room !== 'TBD') roomSet.add(room);
+              
+              schedule[day][timeSlot] = {
+                subject: slotData.subject,
+                code: slotData.code || slotData.subject.substring(0, 3),
+                staff: slotData.staff || 'TBD',
+                room: room,
+                type: slotData.subject.toLowerCase().includes('lab') ? 'LAB' : 'Theory'
+              };
+            }
+          });
+        });
+      }
+
+      // Determine primary room (if student has assigned rooms)
+      const primaryRoom = roomSet.size === 1 
+        ? Array.from(roomSet)[0] 
+        : roomSet.size > 1 
+          ? "Multiple" 
+          : "As per Schedule";
+
+      // Extract subjects for legend
+      const subjectMap = new Map();
+      Object.values(schedule).forEach((daySchedule: any) => {
+        Object.values(daySchedule).forEach((slot: any) => {
+          if (slot && slot.code) {
+            subjectMap.set(slot.code, {
+              code: slot.code,
+              name: slot.subject,
+              faculty: slot.staff
+            });
+          }
+        });
+      });
+      const subjects = Array.from(subjectMap.values());
+
+      // Format dates for student timetable
+      const generatedDate = new Date(timetable.generated_at);
+      const formattedDate = generatedDate.toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+
+      const currentYear = generatedDate.getFullYear();
+      const nextYear = currentYear + 1;
+
+      // Create temporary container
+      const tempDiv = document.createElement('div');
+      tempDiv.style.position = 'absolute';
+      tempDiv.style.left = '-9999px';
+      tempDiv.style.width = '210mm';
+      document.body.appendChild(tempDiv);
+
+      // Render template
+      const { createRoot } = await import('react-dom/client');
+      const root = createRoot(tempDiv);
+      
+      await new Promise<void>((resolve) => {
+        root.render(
+          <TimetableTemplate
+            title="SCHOOL OF COMPUTING"
+            subtitle="INDIVIDUAL STUDENT TIMETABLE"
+            department={`Student: ${student.name}`}
+            semester={`Semester ${student.semester} (${currentYear}-${nextYear.toString().slice(-2)})`}
+            section={`Roll No: ${student.roll_no}`}
+            roomNo={primaryRoom}
+            effectiveDate={formattedDate}
+            schedule={schedule}
+            subjects={subjects}
+            pageNumber={1}
+          />
+        );
+        setTimeout(resolve, 500);
+      });
+
+      // Capture and convert to PDF
+      const canvas = await html2canvas(tempDiv.firstChild as HTMLElement, {
+        scale: 2,
+        backgroundColor: '#ffffff',
+        useCORS: true,
+        logging: false,
+        width: 794,
+        height: 1123
+      });
+
+      const pdf = new jsPDF('portrait', 'mm', 'a4');
+      const imgData = canvas.toDataURL('image/png');
+      pdf.addImage(imgData, 'PNG', 0, 0, 210, 297);
+      pdf.save(`${student.name.replace(/\s+/g, '_')}-${student.roll_no}-timetable.pdf`);
+
+      // Cleanup
+      root.unmount();
+      document.body.removeChild(tempDiv);
+      
+      toast.success('Timetable downloaded successfully');
+    } catch (error) {
+      console.error('PDF export error', error);
+      toast.error('Failed to download timetable');
+    } finally {
+      setExporting(false);
+    }
   };
 
   if (loading) {
@@ -316,15 +504,49 @@ export default function Students() {
                         </div>
                       )}
                       
-                      <Button
-                        onClick={() => generatePersonalizedTimetable(student)}
-                        disabled={loading}
-                        className="w-full bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
-                        size="sm"
-                      >
-                        <Sparkles className="w-4 h-4 mr-2" />
-                        {hasTimetable ? 'Regenerate Timetable' : 'Generate Timetable'}
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => generatePersonalizedTimetable(student)}
+                          disabled={loading}
+                          className="flex-1 bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
+                          size="sm"
+                        >
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          {hasTimetable ? 'Regenerate' : 'Generate'}
+                        </Button>
+                      </div>
+                      
+                      {hasTimetable && (
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={() => handleViewTimetable(student)}
+                            variant="outline"
+                            className="flex-1"
+                            size="sm"
+                          >
+                            <Eye className="w-4 h-4 mr-2" />
+                            View
+                          </Button>
+                          <Button
+                            onClick={() => handleDownloadTimetable(student)}
+                            disabled={exporting}
+                            variant="outline"
+                            className="flex-1"
+                            size="sm"
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            {exporting ? 'Exporting...' : 'Download'}
+                          </Button>
+                          <Button
+                            onClick={() => handleDeleteTimetable(student.id)}
+                            variant="destructive"
+                            size="sm"
+                            className="h-8 w-8 p-0"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
@@ -375,15 +597,46 @@ export default function Students() {
                             )}
                           </td>
                           <td className="p-4">
-                            <Button
-                              onClick={() => generatePersonalizedTimetable(student)}
-                              disabled={loading}
-                              size="sm"
-                              className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
-                            >
-                              <Sparkles className="w-4 h-4 mr-1" />
-                              {hasTimetable ? 'Regenerate' : 'Generate'}
-                            </Button>
+                            <div className="flex gap-2">
+                              <Button
+                                onClick={() => generatePersonalizedTimetable(student)}
+                                disabled={loading}
+                                size="sm"
+                                className="bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary/70"
+                              >
+                                <Sparkles className="w-4 h-4 mr-1" />
+                                {hasTimetable ? 'Regenerate' : 'Generate'}
+                              </Button>
+                              {hasTimetable && (
+                                <>
+                                  <Button
+                                    onClick={() => handleViewTimetable(student)}
+                                    variant="outline"
+                                    size="sm"
+                                  >
+                                    <Eye className="w-4 h-4 mr-1" />
+                                    View
+                                  </Button>
+                                  <Button
+                                    onClick={() => handleDownloadTimetable(student)}
+                                    disabled={exporting}
+                                    variant="outline"
+                                    size="sm"
+                                  >
+                                    <Download className="w-4 h-4 mr-1" />
+                                    PDF
+                                  </Button>
+                                  <Button
+                                    onClick={() => handleDeleteTimetable(student.id)}
+                                    variant="destructive"
+                                    size="sm"
+                                    className="h-8 w-8 p-0"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -412,8 +665,21 @@ export default function Students() {
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
             <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
               <CardHeader>
-                <CardTitle>Generate Timetable for {selectedStudentForGeneration.name}</CardTitle>
-                <p className="text-sm text-muted-foreground">Configure generation options</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Generate Timetable for {selectedStudentForGeneration.name}</CardTitle>
+                    <p className="text-sm text-muted-foreground mt-1">Configure AI generation options</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowGenerationDialog(false)}
+                    disabled={isGenerating}
+                    className="h-8 w-8 p-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* Semester Selection */}
@@ -423,6 +689,7 @@ export default function Students() {
                     value={selectedSemesterForGen} 
                     onChange={(e) => setSelectedSemesterForGen(e.target.value)}
                     className="w-full p-2 border rounded-md"
+                    disabled={isGenerating}
                   >
                     {[1,2,3,4,5,6,7,8].map(sem => (
                       <option key={sem} value={sem}>Semester {sem}</option>
@@ -432,13 +699,16 @@ export default function Students() {
 
                 {/* Department Selection */}
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Departments ({selectedDepartments.length} selected)</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                  <label className="text-sm font-medium mb-2 block">
+                    Departments ({selectedDepartments.length} selected) - Optional
+                  </label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-32 overflow-y-auto border rounded-md p-2">
                     {departments.map(dept => (
                       <label key={dept.id} className="flex items-center gap-2 p-2 border rounded cursor-pointer hover:bg-muted/50">
                         <input 
                           type="checkbox" 
                           checked={selectedDepartments.includes(dept.id)}
+                          disabled={isGenerating}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setSelectedDepartments([...selectedDepartments, dept.id]);
@@ -451,12 +721,15 @@ export default function Students() {
                       </label>
                     ))}
                   </div>
+                  <p className="text-xs text-muted-foreground mt-1">Leave empty to use student's department</p>
                 </div>
 
                 {/* Section Selection */}
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Sections (Optional - {selectedSections.length} selected)</label>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-32 overflow-y-auto">
+                  <label className="text-sm font-medium mb-2 block">
+                    Sections (Optional - {selectedSections.length} selected)
+                  </label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-32 overflow-y-auto border rounded-md p-2">
                     {allSections
                       .filter(sec => sec.semester.toString() === selectedSemesterForGen && 
                         (selectedDepartments.length === 0 || selectedDepartments.includes(sec.department_id)))
@@ -465,6 +738,7 @@ export default function Students() {
                         <input 
                           type="checkbox" 
                           checked={selectedSections.includes(section.id)}
+                          disabled={isGenerating}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setSelectedSections([...selectedSections, section.id]);
@@ -477,12 +751,15 @@ export default function Students() {
                       </label>
                     ))}
                   </div>
+                  <p className="text-xs text-muted-foreground mt-1">Optional: Select specific sections</p>
                 </div>
 
                 {/* Subject Selection */}
                 <div>
-                  <label className="text-sm font-medium mb-2 block">Subjects (Optional - {selectedSubjects.length} selected)</label>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-32 overflow-y-auto">
+                  <label className="text-sm font-medium mb-2 block">
+                    Subjects (Optional - {selectedSubjects.length} selected)
+                  </label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-32 overflow-y-auto border rounded-md p-2">
                     {allSubjects
                       .filter(subj => subj.semester.toString() === selectedSemesterForGen && 
                         (selectedDepartments.length === 0 || selectedDepartments.includes(subj.department_id)))
@@ -491,6 +768,7 @@ export default function Students() {
                         <input 
                           type="checkbox" 
                           checked={selectedSubjects.includes(subject.id)}
+                          disabled={isGenerating}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setSelectedSubjects([...selectedSubjects, subject.id]);
@@ -502,6 +780,19 @@ export default function Students() {
                         <span className="text-xs">{subject.name} ({subject.code})</span>
                       </label>
                     ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">Optional: Select specific subjects</p>
+                </div>
+
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-md">
+                  <div className="flex items-start gap-2">
+                    <Sparkles className="w-5 h-5 text-blue-600 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-blue-900">AI-Powered Generation</p>
+                      <p className="text-xs text-blue-700 mt-1">
+                        Using Gemini 2.0 Flash to create an optimized, conflict-free personalized timetable
+                      </p>
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -522,6 +813,106 @@ export default function Students() {
                   Cancel
                 </Button>
               </div>
+            </Card>
+          </div>
+        )}
+
+        {/* View Timetable Dialog */}
+        {viewTimetableDialog && selectedTimetableForView && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+            <Card className="w-full max-w-6xl max-h-[90vh] overflow-y-auto">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>Student Timetable</CardTitle>
+                    <CardDescription>
+                      Generated on {new Date(selectedTimetableForView.generated_at).toLocaleDateString()}
+                    </CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const student = students.find(s => s.id === selectedTimetableForView.student_id);
+                        if (student) handleDownloadTimetable(student);
+                      }}
+                      disabled={exporting}
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      {exporting ? 'Exporting...' : 'Download PDF'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setViewTimetableDialog(false)}
+                      className="h-8 w-8 p-0"
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div id={`timetable-${selectedTimetableForView.student_id}`}>
+                  {selectedTimetableForView.timetable_json && selectedTimetableForView.timetable_json.schedule ? (
+                    <div className="overflow-x-auto">
+                      <div className="grid grid-cols-6 gap-2 min-w-full">
+                        {/* Header */}
+                        <div className="font-semibold p-3 bg-muted rounded-lg text-center text-sm">
+                          Time
+                        </div>
+                        {days.map(day => (
+                          <div key={day} className="font-semibold p-3 bg-muted rounded-lg text-center text-sm">
+                            {day}
+                          </div>
+                        ))}
+
+                        {/* Time slots and schedule */}
+                        {timeSlots.map((timeSlot, timeSlotIndex) => (
+                          <React.Fragment key={timeSlot}>
+                            <div className="p-3 bg-muted/50 rounded-lg text-center font-medium text-xs">
+                              {timeSlot}
+                            </div>
+                            {days.map((day, dayIndex) => {
+                              const daySchedule = selectedTimetableForView.timetable_json.schedule?.[day] || {};
+                              const slot = daySchedule[timeSlot];
+                              
+                              if (!slot || !slot.subject) {
+                                const freePeriodText = getDefaultFreePeriod(
+                                  selectedTimetableForView.timetable_json.semester || 1,
+                                  dayIndex,
+                                  timeSlotIndex
+                                );
+                                return (
+                                  <div key={`${day}-${timeSlot}`} className="p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-xs">
+                                    {freePeriodText}
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div key={`${day}-${timeSlot}`} className="p-2 border rounded-lg bg-gradient-to-br from-blue-50 to-blue-100">
+                                  <Badge className="mb-1 text-[10px] bg-blue-200 text-blue-800 border-blue-300">
+                                    {slot.code || slot.subject.substring(0, 3)}
+                                  </Badge>
+                                  <p className="text-xs font-medium break-words leading-tight">{slot.subject}</p>
+                                  <p className="text-[10px] text-muted-foreground break-words leading-tight">{slot.staff || 'TBD'}</p>
+                                  <p className="text-[10px] text-muted-foreground break-words leading-tight">Room: {slot.room || 'TBD'}</p>
+                                </div>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p>No timetable data available</p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
             </Card>
           </div>
         )}

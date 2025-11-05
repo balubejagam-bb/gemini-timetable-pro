@@ -72,6 +72,47 @@ interface GenerationData {
   staffSubjects: StaffSubject[];
 }
 
+interface StudentTimetableSchedule {
+  [day: string]: {
+    [timeSlot: string]: {
+      subject: string;
+      code: string;
+      staff: string;
+      room: string;
+      type: string;
+    } | null;
+  };
+}
+
+interface StudentTimetableJson {
+  schedule: StudentTimetableSchedule;
+  summary?: {
+    total_classes: number;
+    subjects_covered: string[];
+    free_periods: number;
+  };
+}
+
+interface StudentGenerationData {
+  student: {
+    id: string;
+    name: string;
+    roll_no: string;
+    semester: number;
+    department_id: string;
+    departments?: {
+      name: string;
+      code: string;
+    };
+  };
+  sections: Section[];
+  subjects: Subject[];
+  staff: Staff[];
+  rooms: Room[];
+  timings: Timing[];
+  staffSubjects: StaffSubject[];
+}
+
 // Advanced generation options (restored)
 interface AdvancedGenerationOptions {
   sections?: string[];
@@ -396,6 +437,11 @@ TIMETABLE FORMAT REQUIREMENTS (Based on MBU Format):
 3. Break between slots 2-3 (09:50AM-10:15AM)
 4. Subject codes should be displayed (like DV, BIT, DA, etc.)
 5. For theory+lab subjects: Create both theory and lab entries with same subject_id but different room types
+6. FREE PERIOD HANDLING:
+   - For sections with MANY subjects (5+ subjects): Fill ALL time slots, distribute subjects evenly, NO free periods
+   - For sections with FEW subjects (3-4 subjects): Can leave some slots free for "Library Period" or "Internship"
+   - Free periods should default to "Library Period" or "Internship" depending on semester (higher semesters get Internship)
+   - Ensure minimum 3 classes per day, but aim for 4-5 if enough subjects available
 
 ENHANCED SUBJECT HANDLING:
 1. THEORY+LAB SUBJECTS: For subjects that need both theory and lab components:
@@ -776,6 +822,211 @@ For subjects needing both theory and lab: create separate entries with different
       console.error('Database operation failed:', dbError);
       throw dbError;
     }
+  }
+}
+
+// Individual student timetable generator
+export class StudentTimetableGenerator {
+  private googleApiKey: string;
+
+  constructor() {
+    const apiKey = env.GOOGLE_AI_API_KEY;
+    if (!apiKey) {
+      throw new Error('Google AI API key not configured. Please check your environment variables.');
+    }
+    this.googleApiKey = apiKey;
+  }
+
+  async generateStudentTimetable(
+    studentId: string,
+    semester: number,
+    departmentIds?: string[],
+    sectionIds?: string[],
+    subjectIds?: string[]
+  ): Promise<{
+    success: boolean;
+    timetable?: StudentTimetableJson;
+    model_version?: string;
+    error?: string;
+  }> {
+    try {
+      console.log('Generating personalized student timetable...');
+      
+      // Fetch student data - using type assertion since students table is not in the schema
+      const { data: studentData, error: studentError } = await (supabase as any)
+        .from('students')
+        .select('*, departments(name, code)')
+        .eq('id', studentId)
+        .single();
+      
+      if (studentError || !studentData) {
+        throw new Error('Student not found');
+      }
+
+      const deptIds = departmentIds && departmentIds.length > 0 ? departmentIds : [studentData.department_id];
+
+      // Fetch relevant data based on filters
+      const [sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
+        sectionIds && sectionIds.length > 0
+          ? supabase.from('sections').select('*').in('id', sectionIds)
+          : supabase.from('sections').select('*').eq('semester', semester).in('department_id', deptIds),
+        subjectIds && subjectIds.length > 0
+          ? supabase.from('subjects').select('*').in('id', subjectIds)
+          : supabase.from('subjects').select('*').eq('semester', semester).in('department_id', deptIds),
+        supabase.from('staff').select('*').in('department_id', deptIds),
+        supabase.from('rooms').select('*'),
+        supabase.from('college_timings').select('*').order('day_of_week'),
+        supabase.from('staff_subjects').select('staff_id, subject_id, staff:staff_id(*), subjects:subject_id(*)')
+      ]);
+
+      const data = {
+        student: studentData,
+        sections: sectionsResult.data || [],
+        subjects: subjectsResult.data || [],
+        staff: staffResult.data || [],
+        rooms: roomsResult.data || [],
+        timings: timingsResult.data || [],
+        staffSubjects: staffSubjectsResult.data || []
+      };
+
+      // Generate timetable using Gemini AI
+      const timetableJson = await this.callGeminiForStudent(data, semester);
+      
+      return {
+        success: true,
+        timetable: timetableJson,
+        model_version: 'gemini-2.0-flash'
+      };
+      
+    } catch (error) {
+      console.error('Student timetable generation error:', error);
+      return {
+        success: false,
+        error: error.message || 'Failed to generate student timetable'
+      };
+    }
+  }
+
+  private async callGeminiForStudent(data: StudentGenerationData, semester: number): Promise<StudentTimetableJson> {
+    const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+    const timeSlots = [
+      "9:00-10:00",
+      "10:00-11:00",
+      "11:15-12:15",
+      "12:15-13:15",
+      "14:00-15:00",
+      "15:00-16:00"
+    ];
+
+    const prompt = `You are an AI timetable generator for individual students at Mohan Babu University. Generate a personalized weekly timetable for the following student:
+
+STUDENT INFORMATION:
+Name: ${data.student.name}
+Roll Number: ${data.student.roll_no}
+Semester: ${semester}
+Department: ${data.student.departments?.name || 'Unknown'}
+
+AVAILABLE DATA:
+Subjects: ${JSON.stringify(data.subjects.map(s => ({ id: s.id, name: s.name, code: s.code, hours_per_week: s.hours_per_week, subject_type: s.subject_type })))}
+Staff: ${JSON.stringify(data.staff.map(s => ({ id: s.id, name: s.name })))}
+Rooms: ${JSON.stringify(data.rooms.map(r => ({ id: r.id, room_number: r.room_number, room_type: r.room_type, capacity: r.capacity })))}
+Staff-Subject Mapping: ${JSON.stringify(data.staffSubjects.map(ss => ({ staff_id: ss.staff_id, subject_id: ss.subject_id })))}
+
+TIMETABLE REQUIREMENTS:
+1. Days: Monday to Friday (5 days)
+2. Time Slots: ${timeSlots.join(', ')}
+3. Schedule classes according to subject hours_per_week
+4. Assign appropriate staff who can teach each subject (check staff-subject mapping)
+5. Use lab rooms for lab/practical subjects, regular classrooms for theory
+6. Distribute classes evenly across the week
+7. Avoid back-to-back lab sessions if possible
+8. Include breaks (11:00-11:15 break time is already in the time slots)
+9. Ensure at least 4-5 classes per day for a balanced schedule
+10. Leave some free periods for self-study
+
+RESPONSE FORMAT:
+Return ONLY valid JSON in this exact format (no additional text):
+{
+  "schedule": {
+    "Monday": {
+      "9:00-10:00": {
+        "subject": "Subject Name",
+        "code": "SUB101",
+        "staff": "Staff Name",
+        "room": "Room Number",
+        "type": "theory/lab"
+      },
+      "10:00-11:00": { ... },
+      ... (continue for all time slots)
+    },
+    "Tuesday": { ... },
+    ... (continue for all days)
+  },
+  "summary": {
+    "total_classes": 25,
+    "subjects_covered": ["Subject1", "Subject2", ...],
+    "free_periods": 5
+  }
+}
+
+IMPORTANT:
+- Ensure each subject appears for its required hours_per_week across the week
+- Verify staff assignments match the staff-subject mapping
+- Use appropriate room types for each subject
+- Create a balanced, realistic student schedule
+- If a time slot should be free, use null or omit it
+- Ensure proper JSON formatting with no syntax errors`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.googleApiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }],
+          generationConfig: {
+            maxOutputTokens: 8192,
+            temperature: 0.3,
+            topK: 1,
+            topP: 0.8,
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Google AI API error: ${response.status} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    
+    if (!result.candidates?.[0]?.content?.parts?.[0]?.text) {
+      throw new Error('Invalid response from Google AI API');
+    }
+
+    const generatedText = result.candidates[0].content.parts[0].text;
+    
+    // Extract JSON from response
+    const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      throw new Error('No valid JSON found in AI response');
+    }
+    
+    const timetableJson = JSON.parse(jsonMatch[0]);
+    
+    // Validate the structure
+    if (!timetableJson.schedule) {
+      throw new Error('Invalid timetable structure - missing schedule');
+    }
+    
+    return timetableJson;
   }
 }
 
