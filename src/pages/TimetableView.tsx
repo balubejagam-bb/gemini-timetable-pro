@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
-import { Download, Edit3, RefreshCw, Calendar, Grid, Eye, Search, Printer, RotateCcw } from "lucide-react";
+import { Download, Edit3, RefreshCw, Calendar, Grid, Eye, Search, Printer, RotateCcw, User, X, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -28,15 +28,15 @@ const timeSlots = [
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
 
 const subjectColors: Record<string, string> = {
-  "Mathematics": "bg-blue-100 text-blue-800 border-blue-200",
-  "Physics": "bg-green-100 text-green-800 border-green-200",
-  "Chemistry": "bg-purple-100 text-purple-800 border-purple-200",
-  "English": "bg-orange-100 text-orange-800 border-orange-200",
-  "Computer Science": "bg-indigo-100 text-indigo-800 border-indigo-200",
-  "Biology": "bg-emerald-100 text-emerald-800 border-emerald-200",
-  "History": "bg-amber-100 text-amber-800 border-amber-200",
-  "Sports": "bg-red-100 text-red-800 border-red-200",
-  "default": "bg-gray-100 text-gray-800 border-gray-200"
+  "Mathematics": "bg-gradient-to-br from-sky-100 to-sky-200 text-sky-800 border-sky-300",
+  "Physics": "bg-gradient-to-br from-blue-100 to-blue-200 text-blue-800 border-blue-300",
+  "Chemistry": "bg-gradient-to-br from-cyan-100 to-cyan-200 text-cyan-800 border-cyan-300",
+  "English": "bg-gradient-to-br from-indigo-100 to-indigo-200 text-indigo-800 border-indigo-300",
+  "Computer Science": "bg-gradient-to-br from-blue-100 to-blue-200 text-blue-800 border-blue-300",
+  "Biology": "bg-gradient-to-br from-teal-100 to-teal-200 text-teal-800 border-teal-300",
+  "History": "bg-gradient-to-br from-slate-100 to-slate-200 text-slate-800 border-slate-300",
+  "Sports": "bg-gradient-to-br from-blue-100 to-blue-200 text-blue-800 border-blue-300",
+  "default": "bg-gradient-to-br from-blue-100 to-blue-200 text-blue-800 border-blue-300"
 };
 
 interface TimetableEntry {
@@ -63,6 +63,23 @@ interface AllTimetablesData {
   };
 }
 
+interface PersonalizedTimetable {
+  id: string;
+  student_id: string;
+  timetable_json: any;
+  generated_at: string;
+  model_version?: string;
+  students?: { name: string; roll_no: string };
+}
+
+interface TimetablePopupData {
+  title: string;
+  entries: TimetableEntry[] | any;
+  type: 'section' | 'student';
+  timetableId?: string;
+  generatedAt?: string;
+}
+
 export default function TimetableView() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
@@ -80,6 +97,8 @@ export default function TimetableView() {
   const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]); // deptId|sectionName|semester
   const [searchTerm, setSearchTerm] = useState("");
   const [regenerating, setRegenerating] = useState(false);
+  const [personalizedTimetables, setPersonalizedTimetables] = useState<PersonalizedTimetable[]>([]);
+  const [popupData, setPopupData] = useState<TimetablePopupData | null>(null);
   const { toast } = useToast();
 
   const fetchDepartments = useCallback(async () => {
@@ -222,8 +241,26 @@ export default function TimetableView() {
   useEffect(() => {
     if (viewMode === "all") {
       fetchAllTimetables();
+      fetchPersonalizedTimetables();
     }
   }, [viewMode, fetchAllTimetables]);
+
+  const fetchPersonalizedTimetables = useCallback(async () => {
+    try {
+      const { data, error } = await (supabase as any)
+        .from('personalized_timetables')
+        .select(`
+          *,
+          students(name, roll_no)
+        `)
+        .order('generated_at', { ascending: false });
+
+      if (error) throw error;
+      setPersonalizedTimetables((data as any) || []);
+    } catch (error) {
+      console.error('Error fetching personalized timetables:', error);
+    }
+  }, []);
 
   const getTimetableEntry = (entries: TimetableEntry[], day: number, timeSlot: number) => {
     return entries.find(entry => 
@@ -258,7 +295,16 @@ export default function TimetableView() {
   };
 
   const handlePrint = () => {
+    // Hide non-printable elements before printing
+    const controls = document.querySelectorAll('.no-print');
+    controls.forEach(el => (el as HTMLElement).style.display = 'none');
+    
     window.print();
+    
+    // Restore after printing
+    setTimeout(() => {
+      controls.forEach(el => (el as HTMLElement).style.display = '');
+    }, 100);
   };
 
   // Inject temporary styles to improve PDF rendering (prevent overlapping)
@@ -282,11 +328,11 @@ export default function TimetableView() {
     if (style) style.remove();
   };
 
-  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string) => (
-    <Card className="mb-6 timetable-grid-export" data-export-key={exportKey || ''}>
+  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, isPopup = false) => (
+    <Card className={`${!isPopup ? 'mb-6' : ''} timetable-grid-export`} data-export-key={exportKey || ''}>
       <CardHeader>
         <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
-        <CardDescription>{entries.length} entries loaded</CardDescription>
+        <CardDescription>{entries.length} schedule entries</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
@@ -319,9 +365,9 @@ export default function TimetableView() {
                   }
 
                   return (
-                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-2 border rounded-lg hover:shadow-sm transition-shadow pdf-cell">
-                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-1 text-[10px] pdf-badge`}>{entry.subjects.code}</Badge>
-                      <p className="text-[10px] md:text-xs font-medium break-words w-full leading-tight">{entry.subjects.name}</p>
+                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-2 border rounded-lg hover:shadow-md transition-all duration-200 pdf-cell bg-gradient-to-br from-blue-50 to-blue-100 shadow-sm">
+                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-1 text-[10px] pdf-badge shadow-sm`}>{entry.subjects.code}</Badge>
+                      <p className="text-[10px] md:text-xs font-semibold break-words w-full leading-tight">{entry.subjects.name}</p>
                       <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">{entry.staff.name}</p>
                       <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">Room: {entry.rooms.room_number}</p>
                     </div>
@@ -436,6 +482,12 @@ export default function TimetableView() {
     )
   );
 
+  // Extend search to student timetables
+  const filteredPersonalizedTimetables = personalizedTimetables.filter(timetable =>
+    timetable.students?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    timetable.students?.roll_no?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   return (
     <div className="space-y-4 md:space-y-6 animate-fade-in">
       {/* Page Header - Mobile responsive */}
@@ -506,7 +558,7 @@ export default function TimetableView() {
 
         <TabsContent value="single" className="space-y-6">
           {/* Filters for Single View */}
-          <Card>
+          <Card className="no-print">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Calendar className="w-5 h-5" />
@@ -599,7 +651,7 @@ export default function TimetableView() {
 
         <TabsContent value="all" className="space-y-6">
           {/* Search bar for all timetables */}
-          <Card>
+          <Card className="no-print">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <Search className="w-5 h-5" />
@@ -634,7 +686,7 @@ export default function TimetableView() {
           ) : (
             <div className="space-y-6">
               {/* List view of all timetables */}
-              <Card>
+              <Card className="no-print">
                 <CardHeader>
                   <CardTitle>All Timetables ({Object.keys(filteredTimetablesData).length} departments)</CardTitle>
                 </CardHeader>
@@ -663,19 +715,188 @@ export default function TimetableView() {
                   <div key={deptId}>
                     <h2 className="text-xl md:text-2xl font-bold mb-4">{department.departmentName}</h2>
                     {Object.entries(department.sections).map(([sectionKey, section]) => (
-                      renderTimetableGrid(
-                        section.entries,
-                        `${section.sectionName} - Semester ${section.semester}`,
-                        `${deptId}|${section.sectionName}|${section.semester}`
-                      )
+                      <div
+                        key={sectionKey}
+                        className="cursor-pointer"
+                        onClick={() => setPopupData({
+                          title: `${section.sectionName} - Semester ${section.semester}`,
+                          entries: section.entries,
+                          type: 'section'
+                        })}
+                      >
+                        {renderTimetableGrid(
+                          section.entries,
+                          `${section.sectionName} - Semester ${section.semester}`,
+                          `${deptId}|${section.sectionName}|${section.semester}`
+                        )}
+                      </div>
                     ))}
                   </div>
                 ))}
               </div>
+
+              {/* Student Timetables Section */}
+              {filteredPersonalizedTimetables.length > 0 && (
+                <Card className="mt-8 no-print">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <User className="w-5 h-5" />
+                      Individual Student Timetables ({filteredPersonalizedTimetables.length})
+                    </CardTitle>
+                    <CardDescription>AI-generated personalized timetables for students</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                      {filteredPersonalizedTimetables.map((timetable) => (
+                        <Card 
+                          key={timetable.id} 
+                          className="p-4 cursor-pointer hover:shadow-md transition-shadow"
+                          onClick={() => setPopupData({
+                            title: `${timetable.students?.name || 'Unknown Student'} - ${timetable.students?.roll_no || ''}`,
+                            entries: timetable.timetable_json,
+                            type: 'student',
+                            timetableId: timetable.id,
+                            generatedAt: timetable.generated_at
+                          })}
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div>
+                              <h3 className="font-semibold">{timetable.students?.name || 'Unknown Student'}</h3>
+                              <p className="text-sm text-muted-foreground">{timetable.students?.roll_no || 'No Roll Number'}</p>
+                            </div>
+                            <Badge variant="outline" className="bg-green-500/10 text-green-700 border-green-500/20">
+                              <Calendar className="w-3 h-3 mr-1" />
+                              AI Generated
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Generated: {new Date(timetable.generated_at).toLocaleDateString()}
+                          </p>
+                          {timetable.model_version && (
+                            <p className="text-xs text-muted-foreground">
+                              Model: {timetable.model_version}
+                            </p>
+                          )}
+                        </Card>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           )}
         </TabsContent>
       </Tabs>
+
+      {/* Popup Dialog for Timetables */}
+      {popupData && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <Card className="w-full max-w-6xl max-h-[90vh] overflow-y-auto">
+            <CardHeader className="flex flex-row items-center justify-between">
+              <div>
+                <CardTitle>{popupData.title}</CardTitle>
+                <CardDescription>
+                  {popupData.type === 'student' ? 'AI-Generated Individual Timetable' : 'Section Timetable'}
+                </CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={async () => {
+                    if (window.confirm('Are you sure you want to delete this timetable?')) {
+                      if (popupData.type === 'student' && popupData.timetableId) {
+                        await (supabase as any).from('personalized_timetables').delete().eq('id', popupData.timetableId);
+                        toast({ title: 'Deleted', description: 'Student timetable deleted.' });
+                        setPopupData(null);
+                        fetchPersonalizedTimetables();
+                      } else {
+                        // Section timetable: delete all entries for this section/semester
+                        const sectionId = selectedSection;
+                        const semester = parseInt(selectedSemester);
+                        await supabase.from('timetables').delete().eq('section_id', sectionId).eq('semester', semester);
+                        toast({ title: 'Deleted', description: 'Section timetable deleted.' });
+                        setPopupData(null);
+                        fetchAllTimetables();
+                      }
+                    }
+                  }}
+                  className="h-8 w-8 p-0"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPopupData(null)}
+                  className="h-8 w-8 p-0"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {popupData.type === 'student' ? (
+                <div className="space-y-4">
+                  {popupData.entries && popupData.entries.schedule ? (
+                    <div className="overflow-x-auto">
+                      <div className={`grid grid-cols-6 gap-1 md:gap-2 min-w-full ${isMobile ? 'text-xs' : ''}`}>
+                        {/* Header */}
+                        <div className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
+                          Time
+                        </div>
+                        {days.map(day => (
+                          <div key={day} className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
+                            {isMobile ? day.substring(0, 3) : day}
+                          </div>
+                        ))}
+
+                        {/* Time slots and schedule */}
+                        {timeSlots.map((timeSlot, timeIndex) => (
+                          <div key={timeSlot} className="contents">
+                            <div className="p-2 md:p-3 bg-muted/50 rounded-lg text-center font-medium text-xs">
+                              {isMobile ? timeSlot.split('-')[0] : timeSlot}
+                            </div>
+                            {days.map((day, dayIndex) => {
+                              const daySchedule = popupData.entries.schedule?.[day] || {};
+                              const slot = daySchedule[timeSlot];
+                              
+                              if (!slot || !slot.subject) {
+                                return (
+                                  <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-xs">
+                                    {isMobile ? "Free" : "Free Period"}
+                                  </div>
+                                );
+                              }
+
+                              return (
+                                <div key={`${day}-${timeSlot}`} className="p-1 md:p-2 border rounded-lg hover:shadow-md transition-all duration-200 pdf-cell bg-gradient-to-br from-blue-50 to-blue-100">
+                                  <Badge className={`${subjectColors[slot.subject] || subjectColors.default} mb-1 text-[10px] pdf-badge shadow-sm`}>
+                                    {slot.code || slot.subject.substring(0, 3)}
+                                  </Badge>
+                                  <p className="text-[10px] md:text-xs font-medium break-words w-full leading-tight">{slot.subject}</p>
+                                  <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">{slot.staff || 'TBD'}</p>
+                                  <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">Room: {slot.room || 'TBD'}</p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <p>No timetable data available</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                renderTimetableGrid(popupData.entries as TimetableEntry[], popupData.title)
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
@@ -686,6 +907,12 @@ export default function TimetableView() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-6 mt-2">
+            <Input
+              type="date"
+              placeholder="Filter by generation date"
+              onChange={e => setSearchTerm(e.target.value)}
+              className="max-w-xs mb-2"
+            />
             <div className="flex gap-2 flex-wrap">
               <Button type="button" size="sm" variant="outline" onClick={selectAllExports}>Select All</Button>
               <Button type="button" size="sm" variant="outline" onClick={clearAllExports}>Clear All</Button>

@@ -133,3 +133,20 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+
+/* Print Styles - Hide controls during print */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  .timetable-grid-export {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  
+  body {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+}

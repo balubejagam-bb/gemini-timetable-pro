@@ -42,6 +42,7 @@ interface Department {
 
 export default function Subjects() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
+    const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [departments, setDepartments] = useState<Department[]>([]);
   const [subjectDepartments, setSubjectDepartments] = useState<SubjectDepartment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -70,12 +71,10 @@ export default function Subjects() {
         .order('code');
 
       if (error) throw error;
-      
       setSubjects(data || []);
     } catch (error) {
       console.error('Error fetching subjects:', error);
       toast({
-        title: "Error",
         description: "Failed to load subjects",
         variant: "destructive"
       });
