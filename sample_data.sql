@@ -2,11 +2,11 @@
 -- Run this in your Supabase SQL editor to populate the database
 
 -- Insert sample departments
-INSERT INTO public.departments (id, name, code) VALUES 
-  (gen_random_uuid(), 'Computer Science Engineering', 'CSE'),
-  (gen_random_uuid(), 'Electronics and Communication', 'ECE'),
-  (gen_random_uuid(), 'Mechanical Engineering', 'MECH'),
-  (gen_random_uuid(), 'Civil Engineering', 'CIVIL');
+INSERT INTO public.departments (id, name, code, description, hod) VALUES 
+  (gen_random_uuid(), 'Computer Science Engineering', 'CSE', 'Focuses on software development, algorithms, and computer systems', 'Dr. John Smith'),
+  (gen_random_uuid(), 'Electronics and Communication', 'ECE', 'Deals with electronic devices, circuits, and communication systems', 'Dr. Jane Doe'),
+  (gen_random_uuid(), 'Mechanical Engineering', 'MECH', 'Covers design, manufacturing, and maintenance of mechanical systems', 'Dr. Robert Johnson'),
+  (gen_random_uuid(), 'Civil Engineering', 'CIVIL', 'Involves construction, design, and maintenance of infrastructure', 'Dr. Priya Singh');
 
 -- Insert sample rooms
 INSERT INTO public.rooms (id, room_number, capacity, room_type, building, floor) VALUES 

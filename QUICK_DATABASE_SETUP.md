@@ -25,6 +25,13 @@ ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES departments(id) ON DELETE
 ALTER TABLE staff 
 ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES departments(id) ON DELETE SET NULL;
 
+-- Add optional metadata used by the Departments dashboard
+ALTER TABLE departments 
+ADD COLUMN IF NOT EXISTS description TEXT;
+
+ALTER TABLE departments 
+ADD COLUMN IF NOT EXISTS hod TEXT;
+
 -- Create performance indexes
 CREATE INDEX IF NOT EXISTS idx_subjects_name ON subjects(name);
 CREATE INDEX IF NOT EXISTS idx_subjects_code ON subjects(code);
@@ -61,6 +68,20 @@ SELECT
     CASE WHEN EXISTS (
         SELECT 1 FROM information_schema.columns 
         WHERE table_name = 'staff' AND column_name = 'department_id'
+    ) THEN '✅ Added' ELSE '❌ Missing' END
+UNION ALL
+SELECT 
+    'departments.description',
+    CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'departments' AND column_name = 'description'
+    ) THEN '✅ Added' ELSE '❌ Missing' END
+UNION ALL
+SELECT 
+    'departments.hod',
+    CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'departments' AND column_name = 'hod'
     ) THEN '✅ Added' ELSE '❌ Missing' END;
 ```
 
@@ -71,6 +92,8 @@ check_item                | status
 rooms.capacity            | ✅ Added
 subjects.department_id    | ✅ Added
 staff.department_id       | ✅ Added
+departments.description   | ✅ Added
+departments.hod           | ✅ Added
 ```
 
 ## ✅ That's It!

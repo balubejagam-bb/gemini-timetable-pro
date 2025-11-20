@@ -565,10 +565,6 @@ export default function GenerateTimetable() {
                 <CheckCircle className="w-4 h-4 text-success" />
                 <span className="text-sm">Room capacity matching</span>
               </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Algorithm fallback if AI fails</span>
-              </div>
             </CardContent>
           </Card>
 

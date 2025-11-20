@@ -55,7 +55,19 @@ ADD COLUMN IF NOT EXISTS department_id UUID REFERENCES departments(id) ON DELETE
 CREATE INDEX IF NOT EXISTS idx_staff_department ON staff(department_id);
 
 -- ============================================
--- 4. Create indexes for better search performance
+-- 4. Add metadata fields to departments
+-- ============================================
+ALTER TABLE departments 
+ADD COLUMN IF NOT EXISTS description TEXT;
+
+ALTER TABLE departments 
+ADD COLUMN IF NOT EXISTS hod TEXT;
+
+COMMENT ON COLUMN departments.description IS 'Optional summary shown on the admin dashboards';
+COMMENT ON COLUMN departments.hod IS 'Head of Department name stored for quick reference';
+
+-- ============================================
+-- 5. Create indexes for better search performance
 -- ============================================
 CREATE INDEX IF NOT EXISTS idx_subjects_name ON subjects(name);
 CREATE INDEX IF NOT EXISTS idx_subjects_code ON subjects(code);
@@ -63,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_staff_name ON staff(name);
 CREATE INDEX IF NOT EXISTS idx_rooms_room_number ON rooms(room_number);
 
 -- ============================================
--- 5. (Optional) Add unique constraint on subject code per department
+-- 6. (Optional) Add unique constraint on subject code per department
 -- Uncomment if you want to enforce unique codes per department
 -- ============================================
 -- CREATE UNIQUE INDEX IF NOT EXISTS idx_subjects_code_dept 
@@ -89,6 +101,12 @@ WHERE table_name = 'subjects' AND column_name = 'department_id';
 SELECT column_name, data_type 
 FROM information_schema.columns 
 WHERE table_name = 'staff' AND column_name = 'department_id';
+
+-- Check if metadata columns exist on departments
+SELECT column_name, data_type 
+FROM information_schema.columns 
+WHERE table_name = 'departments' AND column_name IN ('description', 'hod')
+ORDER BY column_name;
 
 -- Check indexes
 SELECT indexname, indexdef 
@@ -144,6 +162,8 @@ DROP INDEX IF EXISTS idx_staff_department;
 ALTER TABLE subjects DROP COLUMN IF EXISTS department_id;
 ALTER TABLE staff DROP COLUMN IF EXISTS department_id;
 ALTER TABLE rooms DROP COLUMN IF EXISTS capacity;
+ALTER TABLE departments DROP COLUMN IF EXISTS description;
+ALTER TABLE departments DROP COLUMN IF EXISTS hod;
 ```
 
 ## Benefits
