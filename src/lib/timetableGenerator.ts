@@ -114,12 +114,18 @@ interface StudentGenerationData {
 }
 
 // Advanced generation options (restored)
-interface AdvancedGenerationOptions {
+interface RoomSelectionOptions {
+  rooms?: string[];
+}
+
+interface AdvancedGenerationOptions extends RoomSelectionOptions {
   sections?: string[];
   subjects?: string[];
   staff?: string[];
   advancedMode?: boolean;
 }
+
+type SimpleGenerationOptions = RoomSelectionOptions;
 
 export class ClientTimetableGenerator {
   private googleApiKey: string;
@@ -264,12 +270,16 @@ export class ClientTimetableGenerator {
       staffPromise = supabase.from('staff').select('*');
     }
 
+    const roomsPromise = options?.rooms && options.rooms.length > 0
+      ? supabase.from('rooms').select('*').in('id', options.rooms)
+      : supabase.from('rooms').select('*');
+
     const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
       departmentsPromise,
       sectionsPromise,
       subjectsPromise,
       staffPromise,
-      supabase.from('rooms').select('*'),
+      roomsPromise,
       supabase.from('college_timings').select('*').order('day_of_week'),
       supabase.from('staff_subjects').select('staff_id, subject_id, staff:staff_id(*), subjects:subject_id(*)')
     ]);
@@ -335,6 +345,9 @@ export class ClientTimetableGenerator {
       throw new Error('No staff found for the selected departments');
     }
     if (data.rooms.length === 0) {
+      if (options?.rooms?.length) {
+        throw new Error('Selected rooms are unavailable. Please pick different rooms or leave the room list empty to auto-assign.');
+      }
       throw new Error('No rooms found in the database');
     }
 
@@ -785,7 +798,8 @@ For subjects needing both theory and lab: create separate entries with different
         // Try individual inserts with conflict resolution
         console.log('Attempting individual inserts with conflict handling...');
         let successCount = 0;
-        let errorCount = 0;
+        let conflictCount = 0;
+        let fatalErrorCount = 0;
         
         for (const entry of entries) {
           try {
@@ -796,7 +810,7 @@ For subjects needing both theory and lab: create separate entries with different
             if (insertError) {
               if (insertError.message.includes('duplicate') || insertError.message.includes('violates unique constraint')) {
                 console.log(`Skipping duplicate entry: Day ${entry.day_of_week}, Slot ${entry.time_slot}`);
-                errorCount++;
+                conflictCount++;
               } else {
                 throw insertError;
               }
@@ -805,15 +819,20 @@ For subjects needing both theory and lab: create separate entries with different
             }
           } catch (individualError) {
             console.error(`Failed to insert individual entry:`, individualError);
-            errorCount++;
+            fatalErrorCount++;
           }
         }
         
+        if (successCount === 0 && conflictCount > 0 && fatalErrorCount === 0) {
+          console.warn('All offline timetable entries already existed. Treating as no-op.');
+          return;
+        }
+
         if (successCount === 0) {
-          throw new Error(`Failed to insert any timetable entries. ${errorCount} conflicts detected.`);
+          throw new Error(`Failed to insert any timetable entries. ${conflictCount + fatalErrorCount} conflicts detected.`);
         }
         
-        console.log(`Successfully inserted ${successCount} entries, skipped ${errorCount} conflicts`);
+        console.log(`Successfully inserted ${successCount} entries, skipped ${conflictCount} conflicts`);
         return;
       }
 
@@ -1032,7 +1051,7 @@ IMPORTANT:
 
 // Simple algorithm-based fallback generator
 export class SimpleTimetableGenerator {
-  async generateTimetable(selectedDepartments: string[], selectedSemester: number): Promise<{
+  async generateTimetable(selectedDepartments: string[], selectedSemester: number, options?: SimpleGenerationOptions): Promise<{
     success: boolean;
     message: string;
     entriesCount?: number;
@@ -1042,7 +1061,7 @@ export class SimpleTimetableGenerator {
       console.log('Starting simple algorithm-based timetable generation...');
       
       // Fetch data
-      const data = await this.fetchData(selectedDepartments, selectedSemester);
+      const data = await this.fetchData(selectedDepartments, selectedSemester, options);
       
       // Clear existing timetables
       await this.clearExistingTimetables(data.sections.map(s => s.id));
@@ -1071,18 +1090,22 @@ export class SimpleTimetableGenerator {
     }
   }
 
-  private async fetchData(selectedDepartments: string[], selectedSemester: number): Promise<GenerationData> {
+  private async fetchData(selectedDepartments: string[], selectedSemester: number, options?: SimpleGenerationOptions): Promise<GenerationData> {
+    const roomsPromise = options?.rooms && options.rooms.length > 0
+      ? supabase.from('rooms').select('*').in('id', options.rooms)
+      : supabase.from('rooms').select('*');
+
     const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
       supabase.from('departments').select('*').in('id', selectedDepartments),
       supabase.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
       supabase.from('subjects').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
       supabase.from('staff').select('*').in('department_id', selectedDepartments),
-      supabase.from('rooms').select('*'),
+      roomsPromise,
       supabase.from('college_timings').select('*').order('day_of_week'),
       supabase.from('staff_subjects').select('staff_id, subject_id')
     ]);
 
-    return {
+    const data: GenerationData = {
       departments: departmentsResult.data || [],
       sections: sectionsResult.data || [],
       subjects: subjectsResult.data || [],
@@ -1091,6 +1114,15 @@ export class SimpleTimetableGenerator {
       timings: timingsResult.data || [],
       staffSubjects: staffSubjectsResult.data || []
     };
+
+    if (data.rooms.length === 0) {
+      if (options?.rooms?.length) {
+        throw new Error('Selected rooms are unavailable. Clear the filter to auto-assign from all rooms.');
+      }
+      throw new Error('No rooms found in the database. Please add rooms before running the offline generator.');
+    }
+
+    return data;
   }
 
   private async clearExistingTimetables(sectionIds: string[]): Promise<void> {
@@ -1172,9 +1204,14 @@ export class SimpleTimetableGenerator {
           .filter(Boolean);
         
         // If no specific staff assigned, use any staff from the department
-        const availableStaff = eligibleStaff.length > 0 
+        let availableStaff = eligibleStaff.length > 0 
           ? eligibleStaff 
           : data.staff.filter(s => s.department_id === section.department_id);
+
+        if (availableStaff.length === 0) {
+          // Fall back to any staff in the institution so offline mode still works for new departments
+          availableStaff = data.staff;
+        }
         
         if (availableStaff.length === 0) {
           console.warn(`No staff available for subject: ${subject.name}`);
@@ -1259,10 +1296,18 @@ export class SimpleTimetableGenerator {
             for (const subject of sectionSubjects) {
               if (filled) break;
               
-              const availableStaff = data.staffSubjects
-                .filter(ss => ss.subject_id === subject.id)
-                .map(ss => data.staff.find(s => s.id === ss.staff_id))
-                .filter(s => s !== undefined) as Staff[];
+              let availableStaff = data.staffSubjects
+                  .filter(ss => ss.subject_id === subject.id)
+                  .map(ss => data.staff.find(s => s.id === ss.staff_id))
+                  .filter((s): s is Staff => s !== undefined);
+
+              if (availableStaff.length === 0) {
+                availableStaff = data.staff.filter(s => s.department_id === section.department_id);
+              }
+
+              if (availableStaff.length === 0) {
+                availableStaff = data.staff;
+              }
 
               const appropriateRooms = subject.subject_type === 'lab' || subject.subject_type === 'practical'
                 ? data.rooms.filter(r => r.room_type === 'lab')
@@ -1300,6 +1345,11 @@ export class SimpleTimetableGenerator {
     });
     
     console.log(`Generated ${entries.length} timetable entries with conflict resolution and no free periods`);
+
+    if (entries.length === 0) {
+      throw new Error('Offline generator could not create entries. Please ensure the selected departments have subjects, staff, and at least one available room.');
+    }
+
     return entries;
   }
 

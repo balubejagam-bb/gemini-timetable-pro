@@ -117,6 +117,8 @@ export default function TimetableView() {
   }[]>([]);
   const [displayMode, setDisplayMode] = useState<"list" | "grid">("list");
   const [filterSearchTerm, setFilterSearchTerm] = useState("");
+  const [selectedTimetableKeys, setSelectedTimetableKeys] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   
   const { toast } = useToast();
 
@@ -530,6 +532,76 @@ export default function TimetableView() {
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const getTimetableKey = (sectionId: string, semester: number) => `${sectionId}|${semester}`;
+
+  const toggleTimetableSelection = (key: string) => {
+    setSelectedTimetableKeys(prev => 
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
+  };
+
+  const selectAllFilteredTimetables = () => {
+    setSelectedTimetableKeys(filteredTimetables.map(tt => getTimetableKey(tt.sectionId, tt.semester)));
+  };
+
+  const clearTimetableSelections = () => setSelectedTimetableKeys([]);
+
+  const deleteTimetableForSection = async (sectionId: string, semester: number) => {
+    const { error } = await supabase
+      .from('timetables')
+      .delete()
+      .eq('section_id', sectionId)
+      .eq('semester', semester);
+
+    if (error) throw error;
+  };
+
+  const deleteTimetablesAndRefresh = async (targets: { sectionId: string; semester: number }[], successDescription?: string) => {
+    setBulkDeleting(true);
+    try {
+      for (const { sectionId, semester } of targets) {
+        await deleteTimetableForSection(sectionId, semester);
+        if (selectedSection === sectionId && selectedSemester === semester.toString()) {
+          setTimetableData([]);
+        }
+      }
+
+      toast({ title: 'Timetables Deleted', description: successDescription || `${targets.length} timetable(s) removed.` });
+      fetchAvailableTimetables();
+      if (viewMode === 'all') {
+        fetchAllTimetables();
+      }
+    } catch (error) {
+      console.error('Delete timetables failed', error);
+      toast({ title: 'Delete failed', description: 'Unable to delete timetables. Please try again.', variant: 'destructive' });
+    } finally {
+      setBulkDeleting(false);
+    }
+  };
+
+  const handleBulkDeleteTimetables = async () => {
+    if (selectedTimetableKeys.length === 0) {
+      toast({ title: 'Nothing Selected', description: 'Choose at least one timetable to delete.', variant: 'destructive' });
+      return;
+    }
+
+    if (!window.confirm(`Delete ${selectedTimetableKeys.length} timetable(s)? This cannot be undone.`)) return;
+
+    const targets = selectedTimetableKeys.map(key => {
+      const [sectionId, semesterStr] = key.split('|');
+      return { sectionId, semester: parseInt(semesterStr, 10) };
+    });
+
+    await deleteTimetablesAndRefresh(targets, `${targets.length} timetable(s) removed.`);
+    setSelectedTimetableKeys([]);
+  };
+
+  const handleDeleteSingleTimetable = async (sectionId: string, semester: number, label?: string) => {
+    if (!window.confirm(`Delete timetable for ${label || 'this section'}?`)) return;
+    await deleteTimetablesAndRefresh([{ sectionId, semester }], `${label || 'Timetable'} removed.`);
+    setSelectedTimetableKeys(prev => prev.filter(key => key !== getTimetableKey(sectionId, semester)));
   };
 
   // Inject temporary styles to improve PDF rendering (prevent overlapping)
@@ -1266,15 +1338,37 @@ export default function TimetableView() {
             </Card>
           ) : (
             <Card>
-              <CardHeader>
-                <CardTitle>Available Timetables</CardTitle>
-                <CardDescription>Click on a timetable to view and edit</CardDescription>
+              <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <CardTitle>Available Timetables</CardTitle>
+                  <CardDescription>Select, view, or delete classroom schedules</CardDescription>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={selectAllFilteredTimetables} disabled={filteredTimetables.length === 0}>
+                    Select All ({filteredTimetables.length})
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={clearTimetableSelections} disabled={selectedTimetableKeys.length === 0}>
+                    Clear
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={selectedTimetableKeys.length === 0 || bulkDeleting}
+                    onClick={handleBulkDeleteTimetables}
+                    className="gap-1"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    {bulkDeleting ? 'Deleting...' : `Delete Selected (${selectedTimetableKeys.length})`}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {displayMode === "list" ? (
                   <div className="space-y-2">
                     {filteredTimetables.map((tt) => {
                       const isSelected = selectedSection === tt.sectionId && selectedSemester === tt.semester.toString();
+                      const key = getTimetableKey(tt.sectionId, tt.semester);
+                      const marked = selectedTimetableKeys.includes(key);
                       return (
                         <div
                           key={tt.id}
@@ -1283,16 +1377,38 @@ export default function TimetableView() {
                             isSelected ? 'bg-primary/10 border-primary' : 'hover:bg-accent'
                           }`}
                         >
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <h3 className="font-semibold text-lg">{tt.sectionName}</h3>
-                              <p className="text-sm text-muted-foreground">{tt.departmentName}</p>
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-3">
+                              <Checkbox
+                                checked={marked}
+                                onCheckedChange={() => toggleTimetableSelection(key)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="mt-1"
+                              />
+                              <div>
+                                <h3 className="font-semibold text-lg">{tt.sectionName}</h3>
+                                <p className="text-sm text-muted-foreground">{tt.departmentName}</p>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <Badge variant="secondary" className="text-xs">
-                                Semester {tt.semester}
-                              </Badge>
-                              <p className="text-xs text-muted-foreground mt-1">
+                            <div className="flex flex-col items-end gap-2">
+                              <div className="flex items-center gap-2">
+                                <Badge variant="secondary" className="text-xs">
+                                  Semester {tt.semester}
+                                </Badge>
+                                <Button
+                                  size="icon"
+                                  variant="ghost"
+                                  className="h-8 w-8"
+                                  disabled={bulkDeleting}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteSingleTimetable(tt.sectionId, tt.semester, tt.sectionName);
+                                  }}
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
                                 {tt.count} classes scheduled
                               </p>
                             </div>
@@ -1305,6 +1421,8 @@ export default function TimetableView() {
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {filteredTimetables.map((tt) => {
                       const isSelected = selectedSection === tt.sectionId && selectedSemester === tt.semester.toString();
+                      const key = getTimetableKey(tt.sectionId, tt.semester);
+                      const marked = selectedTimetableKeys.includes(key);
                       return (
                         <div
                           key={tt.id}
@@ -1314,6 +1432,25 @@ export default function TimetableView() {
                           }`}
                         >
                           <div className="text-center space-y-2">
+                            <div className="flex items-center justify-between">
+                              <Checkbox
+                                checked={marked}
+                                onCheckedChange={() => toggleTimetableSelection(key)}
+                                onClick={(e) => e.stopPropagation()}
+                              />
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-8 w-8"
+                                disabled={bulkDeleting}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteSingleTimetable(tt.sectionId, tt.semester, tt.sectionName);
+                                }}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
                             <Calendar className="w-8 h-8 mx-auto text-primary" />
                             <h3 className="font-semibold text-lg">{tt.sectionName}</h3>
                             <p className="text-sm text-muted-foreground">{tt.departmentName}</p>

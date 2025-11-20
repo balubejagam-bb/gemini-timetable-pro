@@ -9,7 +9,7 @@ import { Sparkles, Brain, AlertTriangle, CheckCircle, Settings, Zap, Database, S
 import { useMemo } from 'react';
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
-import { ClientTimetableGenerator } from "@/lib/timetableGenerator";
+import { ClientTimetableGenerator, SimpleTimetableGenerator } from "@/lib/timetableGenerator";
 import DatabaseDebug from "@/lib/databaseDebug";
 
 interface Department {
@@ -70,6 +70,8 @@ export default function GenerateTimetable() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [stats, setStats] = useState({ subjects: 0, rooms: 0, staff: 0, timeSlots: 6 });
   const [loading, setLoading] = useState(true);
+  const [offlineGenerating, setOfflineGenerating] = useState(false);
+  const [backoffStatus, setBackoffStatus] = useState<{ attempt: number; message: string }>({ attempt: 0, message: "Idle" });
   // Advanced mode state
   // Advanced mode always enabled now
   const advancedMode = true;
@@ -79,10 +81,12 @@ export default function GenerateTimetable() {
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
   const [selectedStaffIds, setSelectedStaffIds] = useState<string[]>([]);
+  const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
   const [availableTimings, setAvailableTimings] = useState<{ id: string; day_of_week: number; start_time: string; end_time: string }[]>([]);
   const [selectedTimingIds, setSelectedTimingIds] = useState<string[]>([]);
   // Visibility toggles (user requested all subjects/sections irrespective of department)
   const [showAllSubjects, setShowAllSubjects] = useState(true);
+  const [showAllStaff, setShowAllStaff] = useState(true);
   const { toast } = useToast();
   useEffect(() => {
   const fetchData = async () => {
@@ -125,6 +129,26 @@ export default function GenerateTimetable() {
 
     fetchData();
   }, []);
+  const runWithBackoff = async <T,>(operation: () => Promise<T>, maxAttempts = 3, baseDelay = 1000): Promise<T> => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        setBackoffStatus({ attempt, message: attempt === 1 ? "Running Gemini 1.5 Pro pipeline..." : `Retry ${attempt}/${maxAttempts} with adaptive backoff...` });
+        const result = await operation();
+        setBackoffStatus({ attempt, message: `Succeeded after ${attempt} attempt(s).` });
+        return result;
+      } catch (error) {
+        const err = error as Error;
+        if (attempt === maxAttempts) {
+          setBackoffStatus({ attempt, message: `Failed after ${maxAttempts} attempts: ${err.message}` });
+          throw err;
+        }
+        const delay = baseDelay * Math.pow(2, attempt - 1);
+        setBackoffStatus({ attempt, message: `Attempt ${attempt} failed (${err.message}). Retrying in ${(delay / 1000).toFixed(1)}s...` });
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    throw new Error('Exponential backoff exhausted');
+  };
   const handleGenerate = async () => {
     if (selectedDepartments.length === 0) {
       if (!advancedMode || selectedSubjects.length === 0) {
@@ -149,6 +173,7 @@ export default function GenerateTimetable() {
 
     setIsGenerating(true);
     setProgress(0);
+    setBackoffStatus({ attempt: 0, message: "Priming ML pipeline..." });
 
     try {
       setProgress(20);
@@ -159,19 +184,24 @@ export default function GenerateTimetable() {
         keyPrefix: import.meta.env.VITE_GOOGLE_AI_API_KEY?.substring(0, 10) || 'NOT_FOUND'
       });
       
-      // Only use AI generation
-      const aiGenerator = new ClientTimetableGenerator();
-      setProgress(40);
-      const result = await aiGenerator.generateTimetable(
-        selectedDepartments,
-        parseInt(selectedSemester),
-        advancedMode ? {
-          advancedMode: true,
-          sections: selectedSections.length ? selectedSections : undefined,
-          subjects: selectedSubjects.length ? selectedSubjects : undefined,
-          staff: selectedStaffIds.length ? selectedStaffIds : undefined
-        } : undefined
-      );
+      // Only use AI generation via adaptive backoff
+      const aiTask = () => {
+        const aiGenerator = new ClientTimetableGenerator();
+        return aiGenerator.generateTimetable(
+          selectedDepartments,
+          parseInt(selectedSemester),
+          advancedMode ? {
+            advancedMode: true,
+            sections: selectedSections.length ? selectedSections : undefined,
+            subjects: selectedSubjects.length ? selectedSubjects : undefined,
+            staff: selectedStaffIds.length ? selectedStaffIds : undefined,
+            rooms: selectedRoomIds.length ? selectedRoomIds : undefined
+          } : undefined
+        );
+      };
+
+      setProgress(50);
+      const result = await runWithBackoff(aiTask, 3);
       setProgress(80);
 
       if (result.success) {
@@ -197,6 +227,46 @@ export default function GenerateTimetable() {
         description: `Failed to generate timetables: ${error.message}. Please ensure you have valid data and API keys configured.`,
         variant: "destructive"
       });
+    }
+  };
+  const handleOfflineGenerate = async () => {
+    if (selectedDepartments.length === 0) {
+      toast({
+        title: "Departments Required",
+        description: "Select at least one department before running offline generation.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setOfflineGenerating(true);
+    try {
+      const simpleGenerator = new SimpleTimetableGenerator();
+      const result = await simpleGenerator.generateTimetable(
+        selectedDepartments,
+        parseInt(selectedSemester),
+        {
+          rooms: selectedRoomIds.length ? selectedRoomIds : undefined
+        }
+      );
+
+      if (result.success) {
+        toast({
+          title: "Offline Success",
+          description: result.message
+        });
+      } else {
+        throw new Error(result.error || result.message || 'Offline generator failed');
+      }
+    } catch (error) {
+      const err = error as Error;
+      toast({
+        title: "Offline Generation Failed",
+        description: err.message,
+        variant: "destructive"
+      });
+    } finally {
+      setOfflineGenerating(false);
     }
   };
   // ...existing code...
@@ -263,23 +333,27 @@ export default function GenerateTimetable() {
   const allFilteredSubjects = showAllSubjects
     ? allSubjects
     : allSubjects.filter(s => s.semester.toString() === selectedSemester && (selectedDepartments.length === 0 || selectedDepartments.includes(s.department_id)));
-  const allFilteredStaff = allStaff.filter(st => selectedDepartments.length === 0 || selectedDepartments.includes(st.department_id));
+  const allFilteredStaff = showAllStaff
+    ? allStaff
+    : allStaff.filter(st => selectedDepartments.length === 0 || selectedDepartments.includes(st.department_id));
   const allTimingIds = availableTimings.map(t => t.id);
   const deptNameMap = useMemo(() => Object.fromEntries(departments.map(d => [d.id, d.name])), [departments]);
 
-  const selectAll = (type: 'sections' | 'subjects' | 'staff' | 'timings') => {
+  const selectAll = (type: 'sections' | 'subjects' | 'staff' | 'rooms' | 'timings') => {
     switch(type){
       case 'sections': setSelectedSections(allSectionsSelectable.map(s=>s.id)); break;
       case 'subjects': setSelectedSubjects(allFilteredSubjects.map(s=>s.id)); break;
       case 'staff': setSelectedStaffIds(allFilteredStaff.map(s=>s.id)); break;
+      case 'rooms': setSelectedRoomIds(allRooms.map(r=>r.id)); break;
       case 'timings': setSelectedTimingIds(allTimingIds); break;
     }
   };
-  const clearAll = (type: 'sections' | 'subjects' | 'staff' | 'timings') => {
+  const clearAll = (type: 'sections' | 'subjects' | 'staff' | 'rooms' | 'timings') => {
     switch(type){
       case 'sections': setSelectedSections([]); break;
       case 'subjects': setSelectedSubjects([]); break;
       case 'staff': setSelectedStaffIds([]); break;
+      case 'rooms': setSelectedRoomIds([]); break;
       case 'timings': setSelectedTimingIds([]); break;
     }
   };
@@ -464,7 +538,13 @@ export default function GenerateTimetable() {
                   {/* Staff */}
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-sm font-semibold">Staff</h4>
+                      <div className="flex flex-col gap-1">
+                        <h4 className="text-sm font-semibold">Staff {showAllStaff ? '(All Departments)' : ''}</h4>
+                        <label className="flex items-center gap-2 text-[11px] font-normal">
+                          <Checkbox checked={showAllStaff} onCheckedChange={v=>setShowAllStaff(!!v)} />
+                          <span>Show all staff (cross-department)</span>
+                        </label>
+                      </div>
                       <div className="flex gap-2">
                         <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('staff')}>Select All</Button>
                         <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('staff')}>Clear</Button>
@@ -478,6 +558,37 @@ export default function GenerateTimetable() {
                           <span className="truncate" title={st.name}>{st.name}</span>
                         </label>
                       ))}
+                    </div>
+                  </div>
+                  {/* Rooms */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex flex-col gap-1">
+                        <h4 className="text-sm font-semibold">Rooms</h4>
+                        <p className="text-[11px] text-muted-foreground">Leave empty to auto-assign from database.</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('rooms')}>Select All</Button>
+                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('rooms')}>Clear</Button>
+                      </div>
+                    </div>
+                    <div className="grid gap-2 md:grid-cols-3 max-h-44 overflow-y-auto pr-1">
+                      {allRooms.map(room => (
+                        <label
+                          key={room.id}
+                          className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedRoomIds.includes(room.id)?'bg-primary/10 border-primary':'border-border'}`}
+                          onClick={()=>toggleInList(room.id, selectedRoomIds, setSelectedRoomIds)}
+                        >
+                          <Checkbox checked={selectedRoomIds.includes(room.id)} onCheckedChange={()=>{}} />
+                          <span className="truncate" title={`${room.room_number} (${room.room_type || 'General'})`}>
+                            {room.room_number}
+                            {room.room_type ? ` • ${room.room_type}` : ''}
+                          </span>
+                        </label>
+                      ))}
+                      {allRooms.length === 0 && (
+                        <span className="text-xs text-muted-foreground col-span-3">No rooms found in database.</span>
+                      )}
                     </div>
                   </div>
                   {/* Timings (Informational) */}
@@ -570,6 +681,32 @@ export default function GenerateTimetable() {
 
           <Card>
             <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <SlidersHorizontal className="w-5 h-5 text-primary" />
+                ML Backoff Pipeline
+              </CardTitle>
+              <CardDescription>
+                Resilient retries before falling back to offline generation
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Each AI request is wrapped in an exponential backoff strategy so Gemini hiccups never block your workflow.
+              </p>
+              <div className="rounded-lg border border-muted px-3 py-2 text-sm">
+                <p className="font-medium">Attempt: {backoffStatus.attempt || 0}</p>
+                <p className="text-muted-foreground">{backoffStatus.message}</p>
+              </div>
+              <ul className="text-sm text-muted-foreground space-y-1">
+                <li>Adaptive retry delays up to three attempts</li>
+                <li>ML model can switch strategies between attempts</li>
+                <li>Offline heuristic button stays ready as a safety net</li>
+              </ul>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>Quick Stats</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -599,7 +736,7 @@ export default function GenerateTimetable() {
           <div className="space-y-3">
             <Button 
               onClick={handleGenerate}
-              disabled={isGenerating || needsSupabase}
+              disabled={isGenerating || needsSupabase || offlineGenerating}
               size="lg" 
               className="w-full gap-2 animate-glow"
             >
@@ -607,11 +744,20 @@ export default function GenerateTimetable() {
               {isGenerating ? "Generating..." : "Generate with AI"}
             </Button>
             
-            {/* Removed Simple Algorithm button. Only AI generation is available. */}
+            <Button 
+              onClick={handleOfflineGenerate}
+              disabled={offlineGenerating || isGenerating || needsSupabase}
+              size="lg" 
+              variant="secondary"
+              className="w-full gap-2"
+            >
+              <Zap className="w-4 h-4" />
+              {offlineGenerating ? "Generating Offline..." : "Generate Offline (Heuristic)"}
+            </Button>
             
             <Button 
               onClick={handleDatabaseDiagnostic}
-              disabled={isGenerating}
+              disabled={isGenerating || offlineGenerating}
               size="sm" 
               variant="ghost"
               className="w-full gap-2 text-muted-foreground hover:text-foreground"
