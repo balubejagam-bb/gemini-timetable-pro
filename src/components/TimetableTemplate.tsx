@@ -45,11 +45,13 @@ export const TimetableTemplate: React.FC<TimetableTemplateProps> = ({
 }) => {
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
   const timeSlots = [
-    { label: "08:00AM\nTO\n08:55AM", key: "9:00-10:00" },
-    { label: "08:55AM\nTO\n09:50AM", key: "10:00-11:00" },
-    { label: "10.15AM\nTO\n11.10AM", key: "11:15-12:15" },
-    { label: "11.10AM\nTO\n12.05PM", key: "12:15-13:15" },
-    { label: "12.05PM\nTO\n01.00PM", key: "14:00-15:00" }
+    { label: "09:00AM\nTO\n10:00AM", key: "slot1" },
+    { label: "10:15AM\nTO\n11:15AM", key: "slot2" },
+    { label: "11:15AM\nTO\n12:15PM", key: "slot3" },
+    { label: "01:15PM\nTO\n02:00PM", key: "slot4" },
+    { label: "02:00PM\nTO\n02:45PM", key: "slot5" },
+    { label: "03:00PM\nTO\n04:00PM", key: "slot6" },
+    { label: "04:00PM\nTO\n05:00PM", key: "slot7" }
   ];
 
   const getColorForSubject = (code: string) => {
@@ -105,6 +107,7 @@ export const TimetableTemplate: React.FC<TimetableTemplateProps> = ({
           {department && <p className="text-lg font-bold uppercase">{department}</p>}
           {semester && <p className="text-base font-bold">CLASS WORK TIME TABLE</p>}
           {semester && <p className="text-base font-bold">{semester}</p>}
+          {section && <p className="text-base font-bold">Section: {section}</p>}
         </div>
 
         <div className="flex justify-between px-4 py-2 bg-gray-100">
@@ -139,20 +142,7 @@ export const TimetableTemplate: React.FC<TimetableTemplateProps> = ({
                   const daySchedule = schedule[day] || {};
                   const slotData = daySchedule[slot.key];
                   
-                  // Check if this is a break slot (11:15-12:15 is typically break)
-                  const isBreak = idx === 2 && day === "Monday";
-                  
-                  if (isBreak) {
-                    return (
-                      <td 
-                        key={idx} 
-                        className="border-2 border-black bg-gray-400 p-2 text-center font-bold text-sm"
-                        rowSpan={1}
-                      >
-                        BREAK
-                      </td>
-                    );
-                  }
+
 
                   if (!slotData || !slotData.subject) {
                     return (
@@ -174,8 +164,8 @@ export const TimetableTemplate: React.FC<TimetableTemplateProps> = ({
                       }}
                     >
                       <div className="flex flex-col items-center justify-center min-h-[60px]">
-                        <span className="font-bold text-sm">{slotData.code}</span>
-                        {slotData.type && (
+                        <span className="font-bold text-sm">{slotData.code || slotData.subject}</span>
+                        {slotData.type && slotData.code && (
                           <span className="text-[10px] text-gray-600">({slotData.type})</span>
                         )}
                       </div>

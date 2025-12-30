@@ -201,18 +201,35 @@ export default function Subjects() {
       }
 
       // Header detection
-      const header = lines[0].toLowerCase();
-      const isHeader = header.includes('name') && header.includes('code');
-      const dataLines = isHeader ? lines.slice(1) : lines;
+      const headerLine = lines[0].toLowerCase();
+      const headers = headerLine.split(',').map(h => h.trim());
+      
+      // Map headers to indices
+      const colMap = new Map<string, number>();
+      headers.forEach((h, i) => colMap.set(h, i));
+
+      // Check for required columns
+      // subject_name, subject_code, credits, hours, department_code, department_name, semester, subject_type
+      const hasDeptCode = colMap.has('department_code');
+      const hasDeptName = colMap.has('department_name');
+      
+      // Fallback for legacy columns
+      const nameIdx = colMap.has('subject_name') ? colMap.get('subject_name') : colMap.get('name');
+      const codeIdx = colMap.has('subject_code') ? colMap.get('subject_code') : colMap.get('code');
+      
+      if (!hasDeptCode || nameIdx === undefined || codeIdx === undefined) {
+        toast({ 
+          title: "Import Error", 
+          description: "CSV must have 'department_code', 'subject_name' (or 'name'), and 'subject_code' (or 'code') columns.", 
+          variant: "destructive" 
+        });
+        return;
+      }
 
       // Build department lookup maps
-      const byId = new Map<string, Department>();
-      const byName = new Map<string, Department>();
-      const byCode = new Map<string, Department>();
+      const deptByCode = new Map<string, Department>();
       departments.forEach(d => {
-        byId.set(d.id, d);
-        byName.set(d.name.toLowerCase(), d);
-        if (d.code) byCode.set(d.code.toLowerCase(), d);
+        if (d.code) deptByCode.set(d.code.toLowerCase(), d);
       });
 
       interface Row { name: string; code: string; credits: number; hours_per_week: number; department_id: string; semester: number; subject_type: string; }
@@ -221,45 +238,107 @@ export default function Subjects() {
       const valid: Row[] = [];
       const invalid: RowResult[] = [];
       const seenCodes = new Set<string>();
-      const allowedTypes = new Set(['theory','lab','practical','project']);
+      const allowedTypes = new Set(['theory', 'lab', 'practical']);
+      const newDeptsToCreate = new Map<string, string>(); // code -> name
+
+      const dataLines = lines.slice(1);
 
       for (const raw of dataLines) {
         const cols = raw.split(',').map(c => c.trim());
-        if (cols.length < 2) { invalid.push({ raw, reason: 'Too few columns' }); continue; }
-        const [name, code, creditsStr, hoursStr, deptToken, semStr, typeRaw] = cols;
-        if (!name || !code) { invalid.push({ raw, reason: 'Missing name/code' }); continue; }
+        
+        const name = cols[nameIdx!] || '';
+        const code = cols[codeIdx!] || '';
+        const deptCode = cols[colMap.get('department_code')!] || '';
+        const deptName = hasDeptName ? (cols[colMap.get('department_name')!] || '') : '';
+        
+        const creditsStr = colMap.has('credits') ? cols[colMap.get('credits')!] : '3';
+        const hoursStr = colMap.has('hours') ? cols[colMap.get('hours')!] : (colMap.has('hours_per_week') ? cols[colMap.get('hours_per_week')!] : '3');
+        const semStr = colMap.has('semester') ? cols[colMap.get('semester')!] : '1';
+        const typeRaw = colMap.has('subject_type') ? cols[colMap.get('subject_type')!] : (colMap.has('type') ? cols[colMap.get('type')!] : 'theory');
+
+        if (!name || !code || !deptCode) { 
+          invalid.push({ raw, reason: 'Missing name, code, or department_code' }); 
+          continue; 
+        }
         if (seenCodes.has(code)) { invalid.push({ raw, reason: 'Duplicate code in file' }); continue; }
         seenCodes.add(code);
-        const credits = parseInt(creditsStr || '3', 10) || 3;
-        const hours = parseInt(hoursStr || '3', 10) || 3;
-        const semester = parseInt(semStr || '1', 10) || 1;
-        const type = (typeRaw || 'theory').toLowerCase();
+
+        const credits = parseInt(creditsStr, 10) || 3;
+        const hours = parseInt(hoursStr, 10) || 3;
+        const semester = parseInt(semStr, 10) || 1;
+        
+        let type = (typeRaw || 'theory').toLowerCase();
+        if (type === 'project') type = 'practical';
         const subject_type = allowedTypes.has(type) ? type : 'theory';
 
-        let dept: Department | undefined = undefined;
-        if (deptToken) {
-          dept = byId.get(deptToken) || byCode.get(deptToken.toLowerCase()) || byName.get(deptToken.toLowerCase());
-        }
-        if (!dept) dept = departments[0];
-        if (!dept) { invalid.push({ raw, reason: 'No departments available' }); continue; }
+        const codeLower = deptCode.toLowerCase();
+        let dept = deptByCode.get(codeLower);
 
-        valid.push({ name, code, credits, hours_per_week: hours, department_id: dept.id, semester, subject_type });
+        if (!dept) {
+          if (deptName) {
+            if (!newDeptsToCreate.has(codeLower)) {
+              newDeptsToCreate.set(codeLower, deptName);
+            }
+            valid.push({ name, code, credits, hours_per_week: hours, department_id: `__NEW__:${codeLower}`, semester, subject_type });
+          } else {
+            invalid.push({ raw, reason: `Department code '${deptCode}' not found` });
+          }
+        } else {
+          valid.push({ name, code, credits, hours_per_week: hours, department_id: dept.id, semester, subject_type });
+        }
       }
 
-      if (!valid.length) {
+      // Create new departments
+      if (newDeptsToCreate.size > 0) {
+        const toInsert = Array.from(newDeptsToCreate.entries()).map(([code, name]) => ({
+          code: code.toUpperCase(),
+          name: name
+        }));
+
+        const { data: createdDepts, error: createError } = await supabase
+          .from('departments')
+          .insert(toInsert)
+          .select('id, code');
+
+        if (createError) {
+          console.error('Error creating departments:', createError);
+          toast({ title: "Import Warning", description: "Failed to create new departments.", variant: "destructive" });
+        } else if (createdDepts) {
+          createdDepts.forEach(d => {
+            if (d.code) deptByCode.set(d.code.toLowerCase(), { id: d.id, name: '', code: d.code } as Department);
+          });
+          toast({ title: "Info", description: `Created ${createdDepts.length} new departments.` });
+        }
+      }
+
+      // Resolve pending departments
+      const finalRows = valid.map(r => {
+        if (r.department_id.startsWith('__NEW__:')) {
+          const code = r.department_id.split(':')[1];
+          const dept = deptByCode.get(code);
+          if (dept) {
+            return { ...r, department_id: dept.id };
+          } else {
+            return null;
+          }
+        }
+        return r;
+      }).filter(r => r !== null) as Row[];
+
+      if (!finalRows.length) {
         toast({ title: 'Import Error', description: `No valid rows. ${invalid.length} invalid.`, variant: 'destructive' });
         return;
       }
 
       // Upsert by code (unique on code)
-      const { error: bulkError } = await supabase.from('subjects').upsert(valid, { onConflict: 'code', ignoreDuplicates: true });
-      let inserted = valid.length;
+      const { error: bulkError } = await supabase.from('subjects').upsert(finalRows, { onConflict: 'code', ignoreDuplicates: true });
+      let inserted = finalRows.length;
       let failed = 0;
       let firstError: string | null = null;
       if (bulkError) {
         // fallback row-by-row
         inserted = 0;
-        for (const row of valid) {
+        for (const row of finalRows) {
           const { error: rowErr } = await supabase.from('subjects').upsert(row, { onConflict: 'code', ignoreDuplicates: true });
           if (rowErr) { failed++; if (!firstError) firstError = rowErr.message; } else { inserted++; }
         }
@@ -272,12 +351,13 @@ export default function Subjects() {
 
       toast({
         title: failed || invalid.length ? 'Partial Import' : 'Import Complete',
-        description: `Imported ~${inserted} of ${valid.length} rows. ${summary.join(' | ') || 'All good.'}`.slice(0,300)
+        description: `Imported ~${inserted} of ${finalRows.length} rows. ${summary.join(' | ') || 'All good.'}`.slice(0,300)
       });
       fetchSubjects();
-    } catch (e) {
-      console.error('Error importing subjects:', e);
-      toast({ title: 'Error', description: 'Failed to import subjects data', variant: 'destructive' });
+      fetchDepartments();
+    } catch (error) {
+      console.error('Error importing subjects:', error);
+      toast({ title: 'Error', description: 'Failed to import subjects', variant: 'destructive' });
     } finally {
       event.target.value = '';
     }
@@ -357,11 +437,12 @@ export default function Subjects() {
             size="sm"
             onClick={() => {
               const csvContent =
-                'name,code,credits,hours_per_week,department,semester,subject_type\n' +
-                'Data Structures,CSE101,4,5,CSE,3,theory\n' +
-                'Database Management,CSE202,3,5,CSE,4,theory\n' +
-                'Operating Systems Lab,CSE303,2,6,CSE,5,lab\n' +
-                '# department accepts id, code or name; lines starting with # are ignored';
+                'subject_name,subject_code,credits,hours_per_week,department_code,department_name,semester,subject_type\n' +
+                'Data Structures,CSE101,4,5,CSE,Computer Science Engineering,3,theory\n' +
+                'Database Management,CSE202,3,5,CSE,Computer Science Engineering,4,theory\n' +
+                'Operating Systems Lab,CSE303,2,6,CSE,Computer Science Engineering,5,lab\n' +
+                '# department_code is required. department_name is optional but recommended for auto-creation.\n' +
+                '# subject_type must be one of: theory, lab, practical';
               const blob = new Blob([csvContent], { type: 'text/csv' });
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');

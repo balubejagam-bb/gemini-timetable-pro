@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Sparkles, Brain, AlertTriangle, CheckCircle, Settings, Zap, Database, SlidersHorizontal } from "lucide-react";
+import { Sparkles, Brain, AlertTriangle, Settings, Zap, Database, SlidersHorizontal, Search } from "lucide-react";
 import { useMemo } from 'react';
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
@@ -68,7 +70,6 @@ export default function GenerateTimetable() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [stats, setStats] = useState({ subjects: 0, rooms: 0, staff: 0, timeSlots: 6 });
   const [loading, setLoading] = useState(true);
   const [offlineGenerating, setOfflineGenerating] = useState(false);
   const [backoffStatus, setBackoffStatus] = useState<{ attempt: number; message: string }>({ attempt: 0, message: "Idle" });
@@ -84,8 +85,15 @@ export default function GenerateTimetable() {
   const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
   const [availableTimings, setAvailableTimings] = useState<{ id: string; day_of_week: number; start_time: string; end_time: string }[]>([]);
   const [selectedTimingIds, setSelectedTimingIds] = useState<string[]>([]);
+  
+  // Search states
+  const [sectionSearch, setSectionSearch] = useState("");
+  const [subjectSearch, setSubjectSearch] = useState("");
+  const [staffSearch, setStaffSearch] = useState("");
+  const [roomSearch, setRoomSearch] = useState("");
+
   // Visibility toggles (user requested all subjects/sections irrespective of department)
-  const [showAllSubjects, setShowAllSubjects] = useState(true);
+  const [showAllSubjects, setShowAllSubjects] = useState(false);
   const [showAllStaff, setShowAllStaff] = useState(true);
   const { toast } = useToast();
   useEffect(() => {
@@ -210,7 +218,7 @@ export default function GenerateTimetable() {
         
         toast({
           title: "Success!",
-          description: `AI-powered timetable generated successfully! Created ${result.entriesCount} entries using Gemini 1.5 Pro.`,
+          description: `AI-powered timetable generated successfully! Created ${result.entriesCount} entries.`,
         });
         return;
       } else {
@@ -246,7 +254,11 @@ export default function GenerateTimetable() {
         selectedDepartments,
         parseInt(selectedSemester),
         {
-          rooms: selectedRoomIds.length ? selectedRoomIds : undefined
+          rooms: selectedRoomIds.length ? selectedRoomIds : undefined,
+          subjects: selectedSubjects.length ? selectedSubjects : undefined,
+          staff: selectedStaffIds.length ? selectedStaffIds : undefined,
+          sections: selectedSections.length ? selectedSections : undefined,
+          advancedMode: advancedMode
         }
       );
 
@@ -332,19 +344,39 @@ export default function GenerateTimetable() {
   const allSectionsSelectable = filteredAutoSections; // kept for compatibility
   const allFilteredSubjects = showAllSubjects
     ? allSubjects
-    : allSubjects.filter(s => s.semester.toString() === selectedSemester && (selectedDepartments.length === 0 || selectedDepartments.includes(s.department_id)));
+    : allSubjects.filter(s => (selectedDepartments.length === 0 || selectedDepartments.includes(s.department_id)));
   const allFilteredStaff = showAllStaff
     ? allStaff
     : allStaff.filter(st => selectedDepartments.length === 0 || selectedDepartments.includes(st.department_id));
   const allTimingIds = availableTimings.map(t => t.id);
   const deptNameMap = useMemo(() => Object.fromEntries(departments.map(d => [d.id, d.name])), [departments]);
 
+  // Filtered lists based on search
+  const filteredSectionsDisplay = allSectionsSelectable.filter(s => 
+    s.name.toLowerCase().includes(sectionSearch.toLowerCase()) || 
+    (deptNameMap[s.department_id] || '').toLowerCase().includes(sectionSearch.toLowerCase())
+  );
+
+  const filteredSubjectsDisplay = allFilteredSubjects.filter(s => 
+    s.name.toLowerCase().includes(subjectSearch.toLowerCase()) || 
+    s.code.toLowerCase().includes(subjectSearch.toLowerCase())
+  );
+
+  const filteredStaffDisplay = allFilteredStaff.filter(s => 
+    s.name.toLowerCase().includes(staffSearch.toLowerCase())
+  );
+
+  const filteredRoomsDisplay = allRooms.filter(r => 
+    r.room_number.toLowerCase().includes(roomSearch.toLowerCase()) ||
+    (r.room_type || '').toLowerCase().includes(roomSearch.toLowerCase())
+  );
+
   const selectAll = (type: 'sections' | 'subjects' | 'staff' | 'rooms' | 'timings') => {
     switch(type){
-      case 'sections': setSelectedSections(allSectionsSelectable.map(s=>s.id)); break;
-      case 'subjects': setSelectedSubjects(allFilteredSubjects.map(s=>s.id)); break;
-      case 'staff': setSelectedStaffIds(allFilteredStaff.map(s=>s.id)); break;
-      case 'rooms': setSelectedRoomIds(allRooms.map(r=>r.id)); break;
+      case 'sections': setSelectedSections(filteredSectionsDisplay.map(s=>s.id)); break;
+      case 'subjects': setSelectedSubjects(filteredSubjectsDisplay.map(s=>s.id)); break;
+      case 'staff': setSelectedStaffIds(filteredStaffDisplay.map(s=>s.id)); break;
+      case 'rooms': setSelectedRoomIds(filteredRoomsDisplay.map(r=>r.id)); break;
       case 'timings': setSelectedTimingIds(allTimingIds); break;
     }
   };
@@ -400,23 +432,25 @@ export default function GenerateTimetable() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div>
-                <label className="text-sm font-medium mb-3 block">Select Semester</label>
-                <Select value={selectedSemester} onValueChange={setSelectedSemester}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose semester" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">Semester 1</SelectItem>
-                    <SelectItem value="2">Semester 2</SelectItem>
-                    <SelectItem value="3">Semester 3</SelectItem>
-                    <SelectItem value="4">Semester 4</SelectItem>
-                    <SelectItem value="5">Semester 5</SelectItem>
-                    <SelectItem value="6">Semester 6</SelectItem>
-                    <SelectItem value="7">Semester 7</SelectItem>
-                    <SelectItem value="8">Semester 8</SelectItem>
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium mb-3 block">Select Semester</label>
+                  <Select value={selectedSemester} onValueChange={setSelectedSemester}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose semester" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">Semester 1</SelectItem>
+                      <SelectItem value="2">Semester 2</SelectItem>
+                      <SelectItem value="3">Semester 3</SelectItem>
+                      <SelectItem value="4">Semester 4</SelectItem>
+                      <SelectItem value="5">Semester 5</SelectItem>
+                      <SelectItem value="6">Semester 6</SelectItem>
+                      <SelectItem value="7">Semester 7</SelectItem>
+                      <SelectItem value="8">Semester 8</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div>
@@ -478,261 +512,218 @@ export default function GenerateTimetable() {
               <CardTitle className="flex items-center gap-2"><SlidersHorizontal className="w-5 h-5" />Advanced Options</CardTitle>
               <CardDescription>Fine-tune generation by explicitly selecting resources.</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Sections (auto, read-only) */}
-                <div className="space-y-6">
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-sm font-semibold">Sections</h4>
-                      <div className="flex gap-2">
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('sections')}>Select All</Button>
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('sections')}>Clear</Button>
-                      </div>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-3 max-h-48 overflow-y-auto pr-1">
-                      {allSectionsSelectable.length === 0 && <span className="text-xs text-muted-foreground col-span-3">Select a department to load sections.</span>}
-                      {allSectionsSelectable.map(sec => {
-                        const deptName = deptNameMap[sec.department_id] || 'Dept';
-                        return (
-                          <label 
-                            key={sec.id} 
-                            className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedSections.includes(sec.id)?'bg-primary/10 border-primary':'border-border'}`}
-                            onClick={()=>toggleInList(sec.id, selectedSections, setSelectedSections)}
-                            title={`${sec.name} • ${deptName} • Semester ${sec.semester}`}
-                          >
-                            <Checkbox checked={selectedSections.includes(sec.id)} onCheckedChange={()=>{}} />
-                            <span className="truncate">{sec.name} - {deptName}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  {/* Subjects */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex flex-col gap-1">
-                        <h4 className="text-sm font-semibold">Subjects {showAllSubjects ? '(All Departments)' : ''}</h4>
-                        <label className="flex items-center gap-2 text-[11px] font-normal">
-                          <Checkbox checked={showAllSubjects} onCheckedChange={v=>setShowAllSubjects(!!v)} />
-                          <span>Show all subjects (cross-department)</span>
-                        </label>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('subjects')}>Select All</Button>
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('subjects')}>Clear</Button>
-                      </div>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-3 max-h-48 overflow-y-auto pr-1">
-                      {allFilteredSubjects.map(sub => {
-                        const deptName = deptNameMap[sub.department_id] || 'Dept';
-                        return (
-                          <label key={sub.id} className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedSubjects.includes(sub.id)?'bg-primary/10 border-primary':'border-border'}`}
-                            onClick={()=>toggleInList(sub.id, selectedSubjects, setSelectedSubjects)} title={`${sub.name} (${sub.code}) • ${deptName}`}>
-                            <Checkbox checked={selectedSubjects.includes(sub.id)} onCheckedChange={()=>{}} />
-                            <span className="truncate">{sub.name} <span className="font-semibold">({sub.code})</span></span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  {/* Staff */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex flex-col gap-1">
-                        <h4 className="text-sm font-semibold">Staff {showAllStaff ? '(All Departments)' : ''}</h4>
-                        <label className="flex items-center gap-2 text-[11px] font-normal">
-                          <Checkbox checked={showAllStaff} onCheckedChange={v=>setShowAllStaff(!!v)} />
-                          <span>Show all staff (cross-department)</span>
-                        </label>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('staff')}>Select All</Button>
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('staff')}>Clear</Button>
-                      </div>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-3 max-h-44 overflow-y-auto pr-1">
-                      {allFilteredStaff.map(st => (
-                        <label key={st.id} className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedStaffIds.includes(st.id)?'bg-primary/10 border-primary':'border-border'}`}
-                          onClick={()=>toggleInList(st.id, selectedStaffIds, setSelectedStaffIds)}>
-                          <Checkbox checked={selectedStaffIds.includes(st.id)} onCheckedChange={()=>{}} />
-                          <span className="truncate" title={st.name}>{st.name}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  {/* Rooms */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex flex-col gap-1">
-                        <h4 className="text-sm font-semibold">Rooms</h4>
-                        <p className="text-[11px] text-muted-foreground">Leave empty to auto-assign from database.</p>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('rooms')}>Select All</Button>
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('rooms')}>Clear</Button>
-                      </div>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-3 max-h-44 overflow-y-auto pr-1">
-                      {allRooms.map(room => (
-                        <label
-                          key={room.id}
-                          className={`flex items-center gap-2 border rounded px-2 py-1 text-xs cursor-pointer ${selectedRoomIds.includes(room.id)?'bg-primary/10 border-primary':'border-border'}`}
-                          onClick={()=>toggleInList(room.id, selectedRoomIds, setSelectedRoomIds)}
-                        >
-                          <Checkbox checked={selectedRoomIds.includes(room.id)} onCheckedChange={()=>{}} />
-                          <span className="truncate" title={`${room.room_number} (${room.room_type || 'General'})`}>
-                            {room.room_number}
-                            {room.room_type ? ` • ${room.room_type}` : ''}
-                          </span>
-                        </label>
-                      ))}
-                      {allRooms.length === 0 && (
-                        <span className="text-xs text-muted-foreground col-span-3">No rooms found in database.</span>
-                      )}
-                    </div>
-                  </div>
-                  {/* Timings (Informational) */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-sm font-semibold">Timings (reference)</h4>
-                      <div className="flex gap-2">
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('timings')}>Select All</Button>
-                        <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('timings')}>Clear</Button>
-                      </div>
-                    </div>
-                    <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 max-h-40 overflow-y-auto pr-1 text-[11px]">
-                      {availableTimings.map(t => {
-                        const key = t.id;
-                        const label = `${t.day_of_week}-${t.start_time?.slice(0,5)}-${t.end_time?.slice(0,5)}`;
-                        return (
-                          <label key={key} className={`flex items-center gap-2 border rounded px-2 py-1 cursor-pointer ${selectedTimingIds.includes(key)?'bg-primary/10 border-primary':'border-border'}`}
-                            onClick={()=>toggleInList(key, selectedTimingIds, setSelectedTimingIds)}>
-                            <Checkbox checked={selectedTimingIds.includes(key)} onCheckedChange={()=>{}} />
-                            <span className="truncate" title={label}>{label}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">(Selecting timings is optional; generation uses DB timings automatically.)</p>
+            <CardContent className="space-y-6">
+              {/* Sections */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium">Sections to Schedule</h3>
+                  <div className="space-x-2">
+                    <Button variant="ghost" size="sm" onClick={() => selectAll('sections')}>All</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearAll('sections')}>None</Button>
                   </div>
                 </div>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search sections..."
+                    value={sectionSearch}
+                    onChange={(e) => setSectionSearch(e.target.value)}
+                    className="pl-8"
+                  />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                  {filteredSectionsDisplay.map(section => (
+                    <div key={section.id} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={`sec-${section.id}`}
+                        checked={selectedSections.includes(section.id)}
+                        onCheckedChange={(checked) => {
+                          if(checked) setSelectedSections(prev => [...prev, section.id]);
+                          else setSelectedSections(prev => prev.filter(id => id !== section.id));
+                        }}
+                      />
+                      <Label htmlFor={`sec-${section.id}`} className="text-xs cursor-pointer">
+                        {section.name} <span className="text-muted-foreground">({deptNameMap[section.department_id]})</span>
+                      </Label>
+                    </div>
+                  ))}
+                  {filteredSectionsDisplay.length === 0 && (
+                    <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                      No sections found
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Subjects */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-1">
+                    <h3 className="text-sm font-medium">Subjects {showAllSubjects ? '(All Departments)' : ''}</h3>
+                    <label className="flex items-center gap-2 text-[11px] font-normal">
+                      <Checkbox checked={showAllSubjects} onCheckedChange={v=>setShowAllSubjects(!!v)} />
+                      <span>Show all subjects (cross-department)</span>
+                    </label>
+                  </div>
+                  <div className="space-x-2">
+                    <Button variant="ghost" size="sm" onClick={() => selectAll('subjects')}>All</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearAll('subjects')}>None</Button>
+                  </div>
+                </div>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search subjects..."
+                    value={subjectSearch}
+                    onChange={(e) => setSubjectSearch(e.target.value)}
+                    className="pl-8"
+                  />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                  {filteredSubjectsDisplay.map(subject => (
+                    <div key={subject.id} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={`sub-${subject.id}`}
+                        checked={selectedSubjects.includes(subject.id)}
+                        onCheckedChange={(checked) => {
+                          if(checked) setSelectedSubjects(prev => [...prev, subject.id]);
+                          else setSelectedSubjects(prev => prev.filter(id => id !== subject.id));
+                        }}
+                      />
+                      <Label htmlFor={`sub-${subject.id}`} className="text-xs cursor-pointer truncate" title={`${subject.name} (${subject.code})`}>
+                        <span className="text-muted-foreground mr-1">[Sem {subject.semester}]</span>
+                        {subject.name} <span className="text-muted-foreground">({subject.code})</span>
+                      </Label>
+                    </div>
+                  ))}
+                  {filteredSubjectsDisplay.length === 0 && (
+                    <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                      No subjects found
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Staff */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col gap-1">
+                    <h3 className="text-sm font-medium">Staff {showAllStaff ? '(All Departments)' : ''}</h3>
+                    <label className="flex items-center gap-2 text-[11px] font-normal">
+                      <Checkbox checked={showAllStaff} onCheckedChange={v=>setShowAllStaff(!!v)} />
+                      <span>Show all staff (cross-department)</span>
+                    </label>
+                  </div>
+                  <div className="space-x-2">
+                    <Button variant="ghost" size="sm" onClick={() => selectAll('staff')}>All</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearAll('staff')}>None</Button>
+                  </div>
+                </div>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search staff..."
+                    value={staffSearch}
+                    onChange={(e) => setStaffSearch(e.target.value)}
+                    className="pl-8"
+                  />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                  {filteredStaffDisplay.map(staff => (
+                    <div key={staff.id} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={`staff-${staff.id}`}
+                        checked={selectedStaffIds.includes(staff.id)}
+                        onCheckedChange={(checked) => {
+                          if(checked) setSelectedStaffIds(prev => [...prev, staff.id]);
+                          else setSelectedStaffIds(prev => prev.filter(id => id !== staff.id));
+                        }}
+                      />
+                      <Label htmlFor={`staff-${staff.id}`} className="text-xs cursor-pointer truncate" title={staff.name}>
+                        {staff.name}
+                      </Label>
+                    </div>
+                  ))}
+                  {filteredStaffDisplay.length === 0 && (
+                    <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                      No staff found
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Rooms */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium">Rooms</h3>
+                  <div className="space-x-2">
+                    <Button variant="ghost" size="sm" onClick={() => selectAll('rooms')}>All</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearAll('rooms')}>None</Button>
+                  </div>
+                </div>
+                <div className="relative">
+                  <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search rooms..."
+                    value={roomSearch}
+                    onChange={(e) => setRoomSearch(e.target.value)}
+                    className="pl-8"
+                  />
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                  {filteredRoomsDisplay.map(room => (
+                    <div key={room.id} className="flex items-center space-x-2">
+                      <Checkbox 
+                        id={`room-${room.id}`}
+                        checked={selectedRoomIds.includes(room.id)}
+                        onCheckedChange={(checked) => {
+                          if(checked) setSelectedRoomIds(prev => [...prev, room.id]);
+                          else setSelectedRoomIds(prev => prev.filter(id => id !== room.id));
+                        }}
+                      />
+                      <Label htmlFor={`room-${room.id}`} className="text-xs cursor-pointer truncate" title={`${room.room_number} (${room.room_type || 'General'})`}>
+                        {room.room_number} <span className="text-muted-foreground">({room.room_type || 'Gen'})</span>
+                      </Label>
+                    </div>
+                  ))}
+                  {filteredRoomsDisplay.length === 0 && (
+                    <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                      No rooms found
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Timings (Informational) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold">Timings (reference)</h4>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('timings')}>Select All</Button>
+                    <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('timings')}>Clear</Button>
+                  </div>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 max-h-40 overflow-y-auto pr-1 text-[11px]">
+                  {availableTimings.map(t => {
+                    const key = t.id;
+                    const label = `${t.day_of_week}-${t.start_time?.slice(0,5)}-${t.end_time?.slice(0,5)}`;
+                    return (
+                      <label key={key} className={`flex items-center gap-2 border rounded px-2 py-1 cursor-pointer ${selectedTimingIds.includes(key)?'bg-primary/10 border-primary':'border-border'}`}
+                        onClick={()=>toggleInList(key, selectedTimingIds, setSelectedTimingIds)}>
+                        <Checkbox checked={selectedTimingIds.includes(key)} onCheckedChange={()=>{}} />
+                        <span className="truncate" title={label}>{label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">(Selecting timings is optional; generation uses DB timings automatically.)</p>
+              </div>
             </CardContent>
           </Card>
-
-          {/* Generation Progress */}
-          {isGenerating && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Brain className="w-5 h-5 animate-pulse text-primary" />
-                  AI Generation in Progress
-                </CardTitle>
-                <CardDescription>
-                  Please wait while we generate your timetables...
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  <Progress value={progress} className="w-full" />
-                  <p className="text-sm text-muted-foreground text-center">
-                    {Math.round(progress)}% Complete
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </div>
 
         {/* AI Features & Info */}
         <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Brain className="w-5 h-5 text-primary" />
-                Client-Side AI Features
-              </CardTitle>
-              <CardDescription>
-                Advanced timetable generation powered by Google Gemini AI
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Direct API integration (no edge functions)</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Gemini 1.5 Pro AI model</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Conflict detection & resolution</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Faculty availability optimization</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-4 h-4 text-success" />
-                <span className="text-sm">Room capacity matching</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <SlidersHorizontal className="w-5 h-5 text-primary" />
-                ML Backoff Pipeline
-              </CardTitle>
-              <CardDescription>
-                Resilient retries before falling back to offline generation
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Each AI request is wrapped in an exponential backoff strategy so Gemini hiccups never block your workflow.
-              </p>
-              <div className="rounded-lg border border-muted px-3 py-2 text-sm">
-                <p className="font-medium">Attempt: {backoffStatus.attempt || 0}</p>
-                <p className="text-muted-foreground">{backoffStatus.message}</p>
-              </div>
-              <ul className="text-sm text-muted-foreground space-y-1">
-                <li>Adaptive retry delays up to three attempts</li>
-                <li>ML model can switch strategies between attempts</li>
-                <li>Offline heuristic button stays ready as a safety net</li>
-              </ul>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Quick Stats</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Selected Sections</span>
-                <span className="font-medium">{selectedSections.length}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Total Subjects</span>
-                <span className="font-medium">{stats.subjects}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Available Rooms</span>
-                <span className="font-medium">{stats.rooms}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Faculty Members</span>
-                <span className="font-medium">{stats.staff}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-sm text-muted-foreground">Time Slots/Day</span>
-                <span className="font-medium">{stats.timeSlots}</span>
-              </div>
-            </CardContent>
-          </Card>
-
           <div className="space-y-3">
             <Button 
               onClick={handleGenerate}
@@ -766,6 +757,29 @@ export default function GenerateTimetable() {
               Debug Database Issues
             </Button>
           </div>
+
+          {/* Generation Progress */}
+          {isGenerating && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Brain className="w-5 h-5 animate-pulse text-primary" />
+                  AI Generation in Progress
+                </CardTitle>
+                <CardDescription>
+                  Please wait while we generate your timetables...
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  <Progress value={progress} className="w-full" />
+                  <p className="text-sm text-muted-foreground text-center">
+                    {Math.round(progress)}% Complete
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

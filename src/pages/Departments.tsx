@@ -173,22 +173,44 @@ export default function Departments() {
 
     try {
       const text = await file.text();
-      const lines = text.split('\n');
-      const headers = lines[0].split(',').map(h => h.trim());
+      const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'));
+      if (lines.length <= 1) {
+        toast({ title: "Import Error", description: "CSV appears empty", variant: "destructive" });
+        return;
+      }
+
+      const headerLine = lines[0].toLowerCase();
+      const headers = headerLine.split(',').map(h => h.trim());
+      const colMap = new Map<string, number>();
+      headers.forEach((h, i) => colMap.set(h, i));
+
+      // Support both new and old schema
+      const nameIdx = colMap.has('department_name') ? colMap.get('department_name') : colMap.get('name');
+      const codeIdx = colMap.has('department_code') ? colMap.get('department_code') : colMap.get('code');
+      const descIdx = colMap.has('description') ? colMap.get('description') : -1;
+      const hodIdx = colMap.has('hod') ? colMap.get('hod') : -1;
+
+      if (nameIdx === undefined || codeIdx === undefined) {
+        toast({ title: "Import Error", description: "Missing required columns: department_name (or name), department_code (or code)", variant: "destructive" });
+        return;
+      }
       
       const departmentData = lines.slice(1)
         .filter(line => line.trim())
         .map(line => {
           const values = line.split(',').map(v => v.trim());
           return {
-            name: values[0] || '',
-            code: values[1] || ''
+            name: values[nameIdx!] || '',
+            code: values[codeIdx!] || '',
+            description: descIdx >= 0 ? values[descIdx] : undefined,
+            hod: hodIdx >= 0 ? values[hodIdx] : undefined
           };
-        });
+        })
+        .filter(d => d.name && d.code);
 
       // Insert all departments with error handling
       const results = await Promise.allSettled(
-        departmentData.map(dept => supabase.from('departments').insert(dept))
+        departmentData.map(dept => supabase.from('departments').upsert(dept, { onConflict: 'code' }))
       );
       
       const successful = results.filter(r => r.status === 'fulfilled').length;
@@ -196,13 +218,13 @@ export default function Departments() {
       
       if (failed.length > 0) {
         console.error('Failed insertions:', failed);
-        throw new Error(`${failed.length} insertions failed`);
+        toast({ title: "Partial Import", description: `${successful} imported, ${failed.length} failed.`, variant: "default" });
+      } else {
+        toast({
+          title: "Success",
+          description: `${departmentData.length} departments imported successfully`
+        });
       }
-
-      toast({
-        title: "Success",
-        description: `${departmentData.length} departments imported successfully`
-      });
       
       fetchDepartments();
     } catch (error) {
@@ -212,6 +234,8 @@ export default function Departments() {
         description: "Failed to import departments data",
         variant: "destructive"
       });
+    } finally {
+      event.target.value = '';
     }
   };
 
@@ -278,10 +302,10 @@ export default function Departments() {
             size="sm"
             onClick={() => {
               const csvContent =
-                'name,code,description,hod\n' +
-                'Computer Science Engineering,CSE,Core computer science department,Dr. John Smith\n' +
-                'Electronics and Communication,ECE,Electronics and circuits department,Dr. Jane Doe\n' +
-                'Mechanical Engineering,MECH,Mechanical systems and design department,Dr. Robert Johnson\n';
+                'department_code,department_name,description,hod\n' +
+                'CSE,Computer Science Engineering,Core computer science department,Dr. John Smith\n' +
+                'ECE,Electronics & Communication,Electronics and circuits department,Dr. Jane Doe\n' +
+                'MECH,Mechanical Engineering,Mechanical systems and design department,Dr. Robert Johnson\n';
               const blob = new Blob([csvContent], { type: 'text/csv' });
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');

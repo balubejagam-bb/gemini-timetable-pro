@@ -1,6 +1,185 @@
 import { supabase } from "@/integrations/supabase/client";
 import { env } from "./env";
 
+// Helper to extract JSON array from text with robust parsing
+function extractJsonArray(text: string): any[] | null {
+  // Clean up markdown code blocks first
+  text = text.replace(/```json\s*|\s*```/g, '').trim();
+  // Also remove generic code blocks
+  text = text.replace(/```\s*|\s*```/g, '').trim();
+
+  // 1. Try direct parse if it looks like pure JSON
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+  } catch (e) {}
+
+  // 2. Try to find the first valid JSON array block using bracket balancing
+  let startIndex = text.indexOf('[');
+  while (startIndex !== -1) {
+    let balance = 0;
+    let inString = false;
+    let escape = false;
+    
+    for (let i = startIndex; i < text.length; i++) {
+      const char = text[i];
+      
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+      
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      
+      if (!inString) {
+        if (char === '[') balance++;
+        else if (char === ']') {
+          balance--;
+          if (balance === 0) {
+            // Found a potential matching bracket
+            const potentialJson = text.substring(startIndex, i + 1);
+            try {
+              const parsed = JSON.parse(potentialJson);
+              if (Array.isArray(parsed)) return parsed;
+            } catch (e) {
+              // Continue searching if parse failed
+            }
+            break; // Break inner loop to find next '['
+          }
+        }
+      }
+    }
+    startIndex = text.indexOf('[', startIndex + 1);
+  }
+  
+  // 3. Fallback: Look for object wrapper containing array
+  const objectMatch = text.match(/\{[\s\S]*\}/);
+  if (objectMatch) {
+    try {
+      const obj = JSON.parse(objectMatch[0]);
+      // Check common property names
+      const possibleArrays = [
+        obj.timetable, obj.entries, obj.schedule, obj.data, obj.result, obj.output
+      ];
+      for (const arr of possibleArrays) {
+        if (Array.isArray(arr)) return arr;
+      }
+      // Search all values
+      for (const key in obj) {
+        if (Array.isArray(obj[key]) && obj[key].length > 0) {
+          return obj[key];
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 4. Last resort: Try to find multiple JSON objects and wrap them
+  // This handles the case where the model returns: { ... }, { ... }
+  try {
+    const objects: any[] = [];
+    let braceBalance = 0;
+    let objStart = -1;
+    let inStr = false;
+    let esc = false;
+    
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      if (esc) { esc = false; continue; }
+      if (char === '\\') { esc = true; continue; }
+      if (char === '"') { inStr = !inStr; continue; }
+      
+      if (!inStr) {
+        if (char === '{') {
+          if (braceBalance === 0) objStart = i;
+          braceBalance++;
+        } else if (char === '}') {
+          braceBalance--;
+          if (braceBalance === 0 && objStart !== -1) {
+            const potentialObj = text.substring(objStart, i + 1);
+            try {
+              const parsed = JSON.parse(potentialObj);
+              objects.push(parsed);
+            } catch (e) {}
+            objStart = -1;
+          }
+        }
+      }
+    }
+    
+    if (objects.length > 0) return objects;
+  } catch (e) {}
+
+  return null;
+}
+
+// Helper to extract JSON object from text with robust parsing
+function extractJsonObject(text: string): any | null {
+  // Clean up markdown code blocks first
+  text = text.replace(/```json\n?|\n?```/g, '').trim();
+
+  // 1. Try direct parse
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+  } catch (e) {}
+
+  // 2. Try to find the first valid JSON object block using bracket balancing
+  let startIndex = text.indexOf('{');
+  while (startIndex !== -1) {
+    let balance = 0;
+    let inString = false;
+    let escape = false;
+    
+    for (let i = startIndex; i < text.length; i++) {
+      const char = text[i];
+      
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      
+      if (char === '\\') {
+        escape = true;
+        continue;
+      }
+      
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      
+      if (!inString) {
+        if (char === '{') balance++;
+        else if (char === '}') {
+          balance--;
+          if (balance === 0) {
+            // Found a potential matching bracket
+            const potentialJson = text.substring(startIndex, i + 1);
+            try {
+              const parsed = JSON.parse(potentialJson);
+              if (parsed && typeof parsed === 'object') return parsed;
+            } catch (e) {
+              // Continue searching
+            }
+            break;
+          }
+        }
+      }
+    }
+    startIndex = text.indexOf('{', startIndex + 1);
+  }
+  
+  return null;
+}
+
 interface TimetableEntry {
   section_id: string;
   subject_id: string;
@@ -70,6 +249,7 @@ interface GenerationData {
   rooms: Room[];
   timings: Timing[];
   staffSubjects: StaffSubject[];
+  fillerSubjects?: Subject[];
 }
 
 interface StudentTimetableSchedule {
@@ -125,7 +305,7 @@ interface AdvancedGenerationOptions extends RoomSelectionOptions {
   advancedMode?: boolean;
 }
 
-type SimpleGenerationOptions = RoomSelectionOptions;
+type SimpleGenerationOptions = AdvancedGenerationOptions;
 
 export class ClientTimetableGenerator {
   private googleApiKey: string;
@@ -241,10 +421,10 @@ export class ClientTimetableGenerator {
     // Subject fetch
     let subjectsPromise;
     if (options?.subjects && options.subjects.length > 0) {
+      // If specific subjects are selected, fetch them regardless of semester
       subjectsPromise = supabase.from('subjects')
         .select('*')
-        .in('id', options.subjects)
-        .eq('semester', selectedSemester);
+        .in('id', options.subjects);
     } else if (selectedDepartments.length > 0) {
       subjectsPromise = supabase.from('subjects')
         .select('*')
@@ -437,7 +617,7 @@ export class ClientTimetableGenerator {
       - User has specifically selected ${options?.staff?.length || 0} staff members
       When in advanced mode, ONLY use the sections, subjects, and staff that have been explicitly provided in the data.` : '';
 
-    const prompt = `You are an AI timetable generator for Mohan Babu University. Generate a comprehensive timetable in JSON format for semester ${selectedSemester} based on the reference image format provided.
+    const prompt = `You are an AI timetable generator for Mohan Babu University. Generate a comprehensive timetable in JSON format for semester ${selectedSemester}.
 
 CRITICAL DATABASE CONSTRAINTS (WILL CAUSE SAVE FAILURES IF VIOLATED):
 1. UNIQUE(staff_id, day_of_week, time_slot) - Same staff cannot teach multiple classes at same time
@@ -456,22 +636,17 @@ TIMETABLE FORMAT REQUIREMENTS (Based on MBU Format):
    - Free periods should default to "Library Period" or "Internship" depending on semester (higher semesters get Internship)
    - Ensure minimum 3 classes per day, but aim for 4-5 if enough subjects available
 
-ENHANCED SUBJECT HANDLING:
-1. THEORY+LAB SUBJECTS: For subjects that need both theory and lab components:
-   - Generate theory classes using regular classrooms  
-   - Generate separate lab sessions using lab rooms with "LAB" suffix in timetable
-   - Both should use same subject_id but different room types (classroom vs lab)
-   - Lab sessions should be scheduled in rooms with room_type='lab' or 'practical'
-2. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping)
-3. NO staff conflicts: Each staff member can only be in ONE place at any given day/time_slot
-4. NO room conflicts: Each room can only host ONE class at any given day/time_slot
-5. NO section conflicts: Each section can only have ONE class at any given day/time_slot
-6. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms
-7. Theory subjects can use any classroom or lab
-8. Each subject must be scheduled for its required hours_per_week across the week
-9. Time slots: 1-5 representing periods (MBU format)
-10. Days: 1-6 (Monday=1 to Saturday=6)
-11. MINIMUM DAILY LOAD: Each section must have AT LEAST 3 classes per day (days 1-6). It's acceptable to leave other periods free.
+MANDATORY SCHEDULING RULES:
+1. SCHEDULE EVERY SUBJECT: You MUST schedule every single subject provided in the data for its required 'hours_per_week'.
+2. DO NOT SKIP SUBJECTS: If a subject has hours_per_week=3, you MUST create 3 entries for it.
+3. FILL THE WEEK: Do not leave the schedule empty. Aim to fill at least 4-5 slots per day for every section.
+4. CROSS-SEMESTER SUBJECTS: The provided subjects list may contain subjects from different semesters. Treat them all as valid subjects for this timetable.
+5. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping).
+6. NO staff conflicts: Each staff member can only be in ONE place at any given day/time_slot.
+7. NO room conflicts: Each room can only host ONE class at any given day/time_slot.
+8. NO section conflicts: Each section can only have ONE class at any given day/time_slot.
+9. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms.
+10. Theory subjects can use any classroom or lab.
 
 CONFLICT RESOLUTION STRATEGY:
 - If a staff member is already assigned to day X, slot Y, find different staff for other subjects at that time
@@ -520,7 +695,7 @@ If a section would otherwise have fewer than 3 classes on a day, you may repeat 
 For subjects needing both theory and lab: create separate entries with different room types but same subject_id.`;
 
     const response = await fetch(
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.googleApiKey}`,
+  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.googleApiKey}`,
       {
         method: 'POST',
         headers: {
@@ -529,7 +704,7 @@ For subjects needing both theory and lab: create separate entries with different
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: prompt
+              text: prompt + "\n\nIMPORTANT: Return output as a raw JSON object only. Do not include markdown formatting or backticks."
             }]
           }],
           generationConfig: {
@@ -537,6 +712,7 @@ For subjects needing both theory and lab: create separate entries with different
             temperature: 0.1,
             topK: 1,
             topP: 0.8,
+            responseMimeType: "application/json"
           },
           safetySettings: [
             {
@@ -563,15 +739,22 @@ For subjects needing both theory and lab: create separate entries with different
       throw new Error('Invalid response from Google AI API');
     }
 
-    const generatedText = result.candidates[0].content.parts[0].text;
+    let generatedText = result.candidates[0].content.parts[0].text;
     
-    // Extract JSON from response
-    const jsonMatch = generatedText.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
-      throw new Error('No valid JSON found in AI response');
+    // Clean up markdown code blocks if present
+    generatedText = generatedText.replace(/```json\n?|\n?```/g, '').trim();
+    
+    console.log('Gemini Raw Response:', generatedText);
+
+    const parsedData = extractJsonArray(generatedText);
+
+    if (!parsedData || !Array.isArray(parsedData)) {
+      console.error('AI Response Text (Failed to find JSON array):', generatedText);
+      const snippet = generatedText.substring(0, 200).replace(/\n/g, ' ');
+      throw new Error(`No valid JSON found in AI response. Response snippet: "${snippet}..."`);
     }
     
-    return JSON.parse(jsonMatch[0]);
+    return parsedData;
   }
 
   // Post-processing: guarantee minimum 3 classes per day for each section (days 1-6)
@@ -582,7 +765,7 @@ For subjects needing both theory and lab: create separate entries with different
   ): TimetableEntry[] {
     const MIN_PER_DAY = 3;
     const days = [1,2,3,4,5,6];
-    const timeSlots = [1,2,3,4,5];
+    const timeSlots = [1,2,3,4,5,6,7];
     const result: TimetableEntry[] = [...entries];
 
     const staffSlots = new Set(result.map(e => `${e.staff_id}:${e.day_of_week}:${e.time_slot}`));
@@ -914,7 +1097,7 @@ export class StudentTimetableGenerator {
       return {
         success: true,
         timetable: timetableJson,
-        model_version: 'gemini-2.0-flash'
+        model_version: 'gemini-2.5-flash'
       };
       
     } catch (error) {
@@ -929,12 +1112,13 @@ export class StudentTimetableGenerator {
   private async callGeminiForStudent(data: StudentGenerationData, semester: number): Promise<StudentTimetableJson> {
     const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     const timeSlots = [
-      "9:00-10:00",
-      "10:00-11:00",
+      "09:00-10:00",
+      "10:15-11:15",
       "11:15-12:15",
-      "12:15-13:15",
-      "14:00-15:00",
-      "15:00-16:00"
+      "13:15-14:00",
+      "14:00-14:45",
+      "15:00-16:00",
+      "16:00-17:00"
     ];
 
     const prompt = `You are an AI timetable generator for individual students at Mohan Babu University. Generate a personalized weekly timetable for the following student:
@@ -997,7 +1181,7 @@ IMPORTANT:
 - Ensure proper JSON formatting with no syntax errors`;
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${this.googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.googleApiKey}`,
       {
         method: 'POST',
         headers: {
@@ -1006,14 +1190,15 @@ IMPORTANT:
         body: JSON.stringify({
           contents: [{
             parts: [{
-              text: prompt
+              text: prompt + "\n\nIMPORTANT: Return output as a raw JSON object only. Do not include markdown formatting or backticks."
             }]
           }],
           generationConfig: {
             maxOutputTokens: 8192,
-            temperature: 0.3,
+            temperature: 0.1,
             topK: 1,
             topP: 0.8,
+            responseMimeType: "application/json"
           }
         })
       }
@@ -1030,15 +1215,19 @@ IMPORTANT:
       throw new Error('Invalid response from Google AI API');
     }
 
-    const generatedText = result.candidates[0].content.parts[0].text;
+    let generatedText = result.candidates[0].content.parts[0].text;
     
-    // Extract JSON from response
-    const jsonMatch = generatedText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    // Clean up markdown code blocks if present
+    generatedText = generatedText.replace(/```json\n?|\n?```/g, '').trim();
+    
+    console.log('Gemini Student Timetable Raw Response:', generatedText);
+
+    const timetableJson = extractJsonObject(generatedText);
+
+    if (!timetableJson) {
+      console.error('AI Response Text (Failed to find JSON object):', generatedText);
       throw new Error('No valid JSON found in AI response');
     }
-    
-    const timetableJson = JSON.parse(jsonMatch[0]);
     
     // Validate the structure
     if (!timetableJson.schedule) {
@@ -1095,14 +1284,31 @@ export class SimpleTimetableGenerator {
       ? supabase.from('rooms').select('*').in('id', options.rooms)
       : supabase.from('rooms').select('*');
 
-    const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult] = await Promise.all([
+    // If advanced mode with specific subjects selected, fetch only those
+    const subjectsPromise = options?.subjects && options.subjects.length > 0
+      ? supabase.from('subjects').select('*').in('id', options.subjects)
+      : supabase.from('subjects').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester);
+
+    // Always fetch filler subjects (Library, Internship, Project) to ensure we can fill gaps
+    // even if they weren't explicitly selected in advanced mode
+    const fillerSubjectsPromise = supabase.from('subjects')
+      .select('*')
+      .or('name.ilike.%library%,name.ilike.%internship%,name.ilike.%project%');
+
+    // If advanced mode with specific sections selected, fetch only those
+    const sectionsPromise = options?.sections && options.sections.length > 0
+      ? supabase.from('sections').select('*').in('id', options.sections)
+      : supabase.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester);
+
+    const [departmentsResult, sectionsResult, subjectsResult, staffResult, roomsResult, timingsResult, staffSubjectsResult, fillerSubjectsResult] = await Promise.all([
       supabase.from('departments').select('*').in('id', selectedDepartments),
-      supabase.from('sections').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
-      supabase.from('subjects').select('*').in('department_id', selectedDepartments).eq('semester', selectedSemester),
+      sectionsPromise,
+      subjectsPromise,
       supabase.from('staff').select('*').in('department_id', selectedDepartments),
       roomsPromise,
       supabase.from('college_timings').select('*').order('day_of_week'),
-      supabase.from('staff_subjects').select('staff_id, subject_id')
+      supabase.from('staff_subjects').select('staff_id, subject_id'),
+      fillerSubjectsPromise
     ]);
 
     const data: GenerationData = {
@@ -1112,7 +1318,8 @@ export class SimpleTimetableGenerator {
       staff: staffResult.data || [],
       rooms: roomsResult.data || [],
       timings: timingsResult.data || [],
-      staffSubjects: staffSubjectsResult.data || []
+      staffSubjects: staffSubjectsResult.data || [],
+      fillerSubjects: fillerSubjectsResult.data || []
     };
 
     if (data.rooms.length === 0) {
@@ -1159,7 +1366,7 @@ export class SimpleTimetableGenerator {
 
   private generateSimpleSchedule(data: GenerationData, selectedSemester: number): TimetableEntry[] {
     const entries: TimetableEntry[] = [];
-    const timeSlots = 8; // 8 periods per day
+    const timeSlots = 7; // 7 periods per day
     const days = 5; // Monday to Friday only
     
     // Track occupied slots to avoid conflicts
@@ -1168,6 +1375,10 @@ export class SimpleTimetableGenerator {
       rooms: new Set<string>(), // room_id:day:slot
       sections: new Set<string>() // section_id:day:slot
     };
+
+    // Track staff load for balancing
+    const staffLoad: Record<string, number> = {};
+    data.staff.forEach(s => staffLoad[s.id] = 0);
     
     // Helper function to check if a slot is available
     const isSlotAvailable = (staffId: string, roomId: string, sectionId: string, day: number, slot: number): boolean => {
@@ -1185,17 +1396,39 @@ export class SimpleTimetableGenerator {
       occupiedSlots.staff.add(`${staffId}:${day}:${slot}`);
       occupiedSlots.rooms.add(`${roomId}:${day}:${slot}`);
       occupiedSlots.sections.add(`${sectionId}:${day}:${slot}`);
+      staffLoad[staffId] = (staffLoad[staffId] || 0) + 1;
     };
     
     // Process each section
     data.sections.forEach((section) => {
       console.log(`Processing section: ${section.name}`);
-      const sectionSubjects = data.subjects.filter(s => s.department_id === section.department_id);
+      
+      // In Advanced Mode (specific subjects selected), don't filter by department to allow cross-dept subjects
+      // In Auto Mode, filter by department to ensure correct mapping
+      // Also ensure we only schedule subjects for the correct semester
+      let sectionSubjects = options?.subjects 
+        ? data.subjects.filter(s => s.semester === section.semester) 
+        : data.subjects.filter(s => s.department_id === section.department_id);
+      
+      // Sort subjects: Labs/Practical first (harder to schedule), then by hours descending
+      sectionSubjects.sort((a, b) => {
+        const typeScore = (type: string) => (type?.toLowerCase().includes('lab') || type?.toLowerCase().includes('practical')) ? 2 : 1;
+        const scoreA = typeScore(a.subject_type) * 100 + (Number(a.hours_per_week) || 3);
+        const scoreB = typeScore(b.subject_type) * 100 + (Number(b.hours_per_week) || 3);
+        return scoreB - scoreA; // Descending
+      });
+
+      // Track subject distribution per day for this section
+      const subjectDays = new Map<string, Set<number>>();
       
       // Schedule subjects for this section
       sectionSubjects.forEach((subject) => {
-        const hoursPerWeek = subject.hours_per_week || 3;
-        console.log(`Scheduling subject: ${subject.name} (${hoursPerWeek} hours/week)`);
+        const hoursPerWeek = Number(subject.hours_per_week) || 3;
+        const isLab = subject.subject_type?.toLowerCase().includes('lab') || subject.subject_type?.toLowerCase().includes('practical');
+        const blockSize = isLab ? 2 : 1;
+
+        console.log(`Scheduling subject: ${subject.name} (${hoursPerWeek} hours/week, Block: ${blockSize})`);
+        if (!subjectDays.has(subject.id)) subjectDays.set(subject.id, new Set());
         
         // Find staff who can teach this subject
         const eligibleStaff = data.staffSubjects
@@ -1217,9 +1450,12 @@ export class SimpleTimetableGenerator {
           console.warn(`No staff available for subject: ${subject.name}`);
           return;
         }
+
+        // Sort staff by load (ascending) to balance workload
+        availableStaff.sort((a, b) => (staffLoad[a.id] || 0) - (staffLoad[b.id] || 0));
         
         // Find appropriate rooms
-        const appropriateRooms = subject.subject_type === 'lab' || subject.subject_type === 'practical'
+        const appropriateRooms = isLab
           ? data.rooms.filter(r => r.room_type === 'lab')
           : data.rooms; // Theory can use any room
         
@@ -1230,121 +1466,161 @@ export class SimpleTimetableGenerator {
         
         // Schedule the required hours for this subject
         let scheduledHours = 0;
-        
-        for (let day = 1; day <= days && scheduledHours < hoursPerWeek; day++) {
-          for (let slot = 1; slot <= timeSlots && scheduledHours < hoursPerWeek; slot++) {
+        let attempts = 0;
+        const maxAttempts = 500; // Increased to ensure mandatory hours are met
+
+        while (scheduledHours < hoursPerWeek && attempts < maxAttempts) {
+            attempts++;
             
-            // Try to find available staff and room for this slot
-            let assigned = false;
-            
-            for (const staff of availableStaff) {
-              if (assigned) break;
-              
-              for (const room of appropriateRooms) {
-                if (isSlotAvailable(staff.id, room.id, section.id, day, slot)) {
-                  
-                  // Create the timetable entry
-                  entries.push({
-                    section_id: section.id,
-                    subject_id: subject.id,
-                    staff_id: staff.id,
-                    room_id: room.id,
-                    day_of_week: day,
-                    time_slot: slot,
-                    semester: selectedSemester
-                  });
-                  
-                  // Mark the slot as occupied
-                  markSlotOccupied(staff.id, room.id, section.id, day, slot);
-                  
-                  scheduledHours++;
-                  assigned = true;
-                  console.log(`Scheduled: ${subject.name} - Day ${day}, Slot ${slot} - Staff: ${staff.name}, Room: ${room.room_number}`);
-                  break;
+            // Strategy: Try to find a day we haven't used yet for this subject
+            let bestDay = -1;
+            let bestSlot = -1;
+            let bestStaff = null;
+            let bestRoom = null;
+
+            // Create a list of all possible slots (day, slot)
+            const possibleSlots = [];
+            for(let d=1; d<=days; d++) {
+                for(let s=1; s<=timeSlots; s++) {
+                    possibleSlots.push({day: d, slot: s});
                 }
-              }
             }
-            
-            if (!assigned) {
-              console.warn(`Could not schedule ${subject.name} for section ${section.name} at Day ${day}, Slot ${slot} - no available staff/room`);
+
+            // Shuffle slots to randomize
+            for (let i = possibleSlots.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [possibleSlots[i], possibleSlots[j]] = [possibleSlots[j], possibleSlots[i]];
             }
-          }
+
+            // Sort slots: Prioritize days not used yet
+            possibleSlots.sort((a, b) => {
+                const usedA = subjectDays.get(subject.id)?.has(a.day) ? 1 : 0;
+                const usedB = subjectDays.get(subject.id)?.has(b.day) ? 1 : 0;
+                return usedA - usedB; // 0 (unused) comes before 1 (used)
+            });
+
+            // If we are struggling to find a slot (attempts > 50), try deterministic search to ensure we don't miss any opportunity
+            if (attempts > 50) {
+                possibleSlots.sort((a, b) => (a.day * 10 + a.slot) - (b.day * 10 + b.slot));
+            }
+
+            // Find first valid slot
+            for (const {day, slot} of possibleSlots) {
+                // For labs, enforce consecutive slots (1-2, 3-4, 5-6, 7-8)
+                if (isLab) {
+                    if (slot % 2 === 0) continue; // Must start on odd slot
+                    if (slot + 1 > timeSlots) continue; // Must fit in day
+                }
+
+                // Check if section is free for all blocks
+                let sectionFree = true;
+                for(let i=0; i<blockSize; i++) {
+                    if (occupiedSlots.sections.has(`${section.id}:${day}:${slot+i}`)) {
+                        sectionFree = false;
+                        break;
+                    }
+                }
+                if (!sectionFree) continue;
+
+                // Try to find staff and room
+                for (const staff of availableStaff) {
+                    if (bestStaff) break;
+                    for (const room of appropriateRooms) {
+                        // Check availability for all blocks
+                        let available = true;
+                        for(let i=0; i<blockSize; i++) {
+                            if (!isSlotAvailable(staff.id, room.id, section.id, day, slot+i)) {
+                                available = false;
+                                break;
+                            }
+                        }
+                        
+                        if (available) {
+                            bestDay = day;
+                            bestSlot = slot;
+                            bestStaff = staff;
+                            bestRoom = room;
+                            break;
+                        }
+                    }
+                }
+                if (bestDay !== -1) break;
+            }
+
+            if (bestDay !== -1 && bestStaff && bestRoom) {
+                for(let i=0; i<blockSize; i++) {
+                    entries.push({
+                        section_id: section.id,
+                        subject_id: subject.id,
+                        staff_id: bestStaff.id,
+                        room_id: bestRoom.id,
+                        day_of_week: bestDay,
+                        time_slot: bestSlot + i,
+                        semester: selectedSemester
+                    });
+                    markSlotOccupied(bestStaff.id, bestRoom.id, section.id, bestDay, bestSlot + i);
+                }
+                
+                subjectDays.get(subject.id)?.add(bestDay);
+                scheduledHours += blockSize;
+                console.log(`Scheduled: ${subject.name} - Day ${bestDay}, Slot ${bestSlot}-${bestSlot+blockSize-1} - Staff: ${bestStaff.name}, Room: ${bestRoom.room_number}`);
+            }
         }
         
         if (scheduledHours < hoursPerWeek) {
           console.warn(`Only scheduled ${scheduledHours}/${hoursPerWeek} hours for ${subject.name} in section ${section.name}`);
         }
       });
-    });
 
-    // FILL ALL REMAINING SLOTS (NO FREE PERIODS)
-    console.log('Filling remaining slots to ensure no free periods...');
-    const relevantSections = data.sections.filter(s => s.semester === selectedSemester);
-    
-    relevantSections.forEach(section => {
-      const sectionSubjects = data.subjects.filter(s => s.department_id === section.department_id);
+      // Fill remaining slots with Library or Internship if available
+      // Use a combined list to find fillers, but don't iterate over them for main scheduling
+      const allAvailableSubjects = [...data.subjects, ...(data.fillerSubjects || [])];
       
-      for (let day = 1; day <= days; day++) {
-        for (let slot = 1; slot <= timeSlots; slot++) {
-          // Check if this slot is empty for this section
-          const sectionKey = `${section.id}:${day}:${slot}`;
-          if (!occupiedSlots.sections.has(sectionKey)) {
-            console.log(`Filling empty slot: Section ${section.name}, Day ${day}, Slot ${slot}`);
-            
-            // Try to fill with any available subject/staff/room combination
-            let filled = false;
-            for (const subject of sectionSubjects) {
-              if (filled) break;
-              
-              let availableStaff = data.staffSubjects
-                  .filter(ss => ss.subject_id === subject.id)
-                  .map(ss => data.staff.find(s => s.id === ss.staff_id))
-                  .filter((s): s is Staff => s !== undefined);
+      const librarySubject = allAvailableSubjects.find(s => s.name.toLowerCase().includes('library') && (s.department_id === section.department_id || !s.department_id));
+      const internshipSubject = allAvailableSubjects.find(s => (s.name.toLowerCase().includes('internship') || s.name.toLowerCase().includes('project')) && (s.department_id === section.department_id || !s.department_id));
+      
+      const fillerSubject = selectedSemester >= 7 ? internshipSubject : librarySubject;
 
-              if (availableStaff.length === 0) {
-                availableStaff = data.staff.filter(s => s.department_id === section.department_id);
-              }
+      if (fillerSubject) {
+        console.log(`Filling empty slots for ${section.name} with ${fillerSubject.name}`);
+        // Find any staff (maybe a coordinator or just any staff member to supervise)
+        // For simplicity, we'll pick the first available staff member or a random one
+        const fillerStaff = data.staff.filter(s => s.department_id === section.department_id)[0] || data.staff[0];
+        const fillerRoom = data.rooms.find(r => r.room_type !== 'lab') || data.rooms[0];
 
-              if (availableStaff.length === 0) {
-                availableStaff = data.staff;
-              }
+        if (fillerStaff && fillerRoom) {
+            for(let d=1; d<=days; d++) {
+                for(let s=1; s<=timeSlots; s++) {
+                    if (!occupiedSlots.sections.has(`${section.id}:${d}:${s}`)) {
+                        // Try to find a valid staff/room for this slot
+                        // Since it's a filler, we can be more flexible, but still need to avoid conflicts
+                        let assignedStaff = fillerStaff;
+                        let assignedRoom = fillerRoom;
+                        
+                        // Try to find ANY available staff/room
+                        const availableStaff = data.staff.find(st => !occupiedSlots.staff.has(`${st.id}:${d}:${s}`));
+                        const availableRoom = data.rooms.find(r => !occupiedSlots.rooms.has(`${r.id}:${d}:${s}`));
 
-              const appropriateRooms = subject.subject_type === 'lab' || subject.subject_type === 'practical'
-                ? data.rooms.filter(r => r.room_type === 'lab')
-                : data.rooms;
-
-              for (const staff of availableStaff) {
-                if (filled) break;
-                for (const room of appropriateRooms) {
-                  if (isSlotAvailable(staff.id, room.id, section.id, day, slot)) {
-                    entries.push({
-                      section_id: section.id,
-                      subject_id: subject.id,
-                      staff_id: staff.id,
-                      room_id: room.id,
-                      day_of_week: day,
-                      time_slot: slot,
-                      semester: selectedSemester
-                    });
-                    
-                    markSlotOccupied(staff.id, room.id, section.id, day, slot);
-                    console.log(`Filled slot: ${subject.name} - Day ${day}, Slot ${slot} - Staff: ${staff.name}, Room: ${room.room_number}`);
-                    filled = true;
-                    break;
-                  }
+                        if (availableStaff && availableRoom) {
+                            entries.push({
+                                section_id: section.id,
+                                subject_id: fillerSubject.id,
+                                staff_id: availableStaff.id,
+                                room_id: availableRoom.id,
+                                day_of_week: d,
+                                time_slot: s,
+                                semester: selectedSemester
+                            });
+                            markSlotOccupied(availableStaff.id, availableRoom.id, section.id, d, s);
+                        }
+                    }
                 }
-              }
             }
-            
-            if (!filled) {
-              console.warn(`Could not fill empty slot: Section ${section.name}, Day ${day}, Slot ${slot} - no available combinations`);
-            }
-          }
         }
       }
     });
-    
-    console.log(`Generated ${entries.length} timetable entries with conflict resolution and no free periods`);
+
+    console.log(`Generated ${entries.length} timetable entries with conflict resolution`);
 
     if (entries.length === 0) {
       throw new Error('Offline generator could not create entries. Please ensure the selected departments have subjects, staff, and at least one available room.');

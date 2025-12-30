@@ -196,204 +196,153 @@ export default function Sections() {
 
     try {
       const text = await file.text();
-      const lines = text.split(/\r?\n/);
-      if (lines.filter(l => l.trim()).length <= 1) {
+      const lines = text.split(/\r?\n/).filter(l => l.trim() && !l.trim().startsWith('#'));
+      if (lines.length <= 1) {
         toast({ title: "Import Error", description: "CSV appears empty", variant: "destructive" });
         return;
       }
 
-      // Build quick lookup maps for department resolution
-      const rebuildDeptMaps = (list: Department[]) => {
-        const id = new Map<string, Department>();
-        const name = new Map<string, Department>();
-        const code = new Map<string, Department>();
-        list.forEach(d => {
-          id.set(d.id, d);
-          name.set(d.name.toLowerCase(), d);
-          if (d.code) code.set(d.code.toLowerCase(), d);
-        });
-        return { id, name, code };
-      };
-      let { id: deptById, name: deptByName, code: deptByCode } = rebuildDeptMaps(departments);
+      // Parse header
+      const headerLine = lines[0].toLowerCase();
+      const headers = headerLine.split(',').map(h => h.trim());
+      
+      // Map headers to indices
+      const colMap = new Map<string, number>();
+      headers.forEach((h, i) => colMap.set(h, i));
 
-      // Detect header & normalize
-      const headerRaw = lines[0].toLowerCase();
-      const isLikelyHeader = /name/.test(headerRaw);
-      const dataLines = (isLikelyHeader ? lines.slice(1) : lines)
-        .filter(l => l.trim())
-        .filter(l => !l.trim().startsWith('#')); // skip comment lines
+      // Check for required columns based on user's "Golden Rule"
+      // department_code, department_name, semester, section_code
+      const hasDeptCode = colMap.has('department_code');
+      const hasDeptName = colMap.has('department_name');
+      
+      // Fallback for legacy "name" column if "section_code" is missing
+      const sectionNameIdx = colMap.has('section_code') ? colMap.get('section_code') : colMap.get('name');
+      
+      if (!hasDeptCode || sectionNameIdx === undefined) {
+        toast({ 
+          title: "Import Error", 
+          description: "CSV must have 'department_code' and 'section_code' (or 'name') columns.", 
+          variant: "destructive" 
+        });
+        return;
+      }
+
+      // Build department lookup maps
+      const deptByCode = new Map<string, Department>();
+      departments.forEach(d => {
+        if (d.code) deptByCode.set(d.code.toLowerCase(), d);
+      });
 
       interface RowResult { row: { name: string; department_id: string; semester: number }; raw: string; reason?: string; }
       const validRows: RowResult[] = [];
       const invalidRows: RowResult[] = [];
+      const newDeptsToCreate = new Map<string, string>(); // code -> name
 
-      // Collect potential new departments for optional auto-create
-      const newDeptTokens = new Set<string>();
+      const dataLines = lines.slice(1);
+
       for (const raw of dataLines) {
-        const originalParts = raw.split(',');
-        const parts = originalParts.map(p => p.trim());
-        if (parts.length === 0 || (parts.length === 1 && !parts[0])) continue;
+        const cols = raw.split(',').map(c => c.trim());
+        
+        const deptCode = cols[colMap.get('department_code')!] || '';
+        const deptName = hasDeptName ? (cols[colMap.get('department_name')!] || '') : '';
+        const sectionName = cols[sectionNameIdx!] || '';
+        const semesterStr = colMap.has('semester') ? cols[colMap.get('semester')!] : '1';
+        const semester = parseInt(semesterStr, 10) || 1;
 
-        let name = parts[0];
-        if (!name) { invalidRows.push({ raw, row: { name: '', department_id: '', semester: 0 }, reason: 'Missing name' }); continue; }
-        let deptToken = parts.length > 1 ? parts[1] : '';
-        const semesterVal = parts.length > 2 && parts[2] ? parseInt(parts[2], 10) : 1;
-
-        // If no explicit department column but name formatted like CSE-A or CSE_A
-        if (!deptToken && /[-_]/.test(name)) {
-          const maybeDept = name.split(/[-_]/)[0];
-          deptToken = maybeDept;
-          // keep section name as trailing token after separator if exists
-          const maybeSection = name.split(/[-_]/)[1];
-          if (maybeSection) {
-            name = maybeSection; // store just A if CSE-A
-          }
-        }
-
-        if (!deptToken) { invalidRows.push({ raw, row: { name, department_id: '', semester: semesterVal }, reason: 'Missing department' }); continue; }
-
-        const tokenLower = deptToken.toLowerCase();
-  const dept: Department | undefined = deptById.get(deptToken) || deptByCode.get(tokenLower) || deptByName.get(tokenLower);
-        if (!dept) {
-          newDeptTokens.add(deptToken);
-          // We'll attempt auto-create later; temporarily mark as unresolved
-          validRows.push({ raw, row: { name, department_id: '__PENDING__:' + deptToken, semester: isNaN(semesterVal) ? 1 : semesterVal } });
+        if (!sectionName || !deptCode) {
+          invalidRows.push({ raw, row: { name: sectionName, department_id: '', semester }, reason: 'Missing code or name' });
           continue;
         }
-        validRows.push({ raw, row: { name, department_id: dept.id, semester: isNaN(semesterVal) ? 1 : semesterVal } });
+
+        const codeLower = deptCode.toLowerCase();
+        let dept = deptByCode.get(codeLower);
+
+        if (!dept) {
+          // Department not found by code.
+          // If we have a name, we can queue it for creation.
+          if (deptName) {
+            if (!newDeptsToCreate.has(codeLower)) {
+              newDeptsToCreate.set(codeLower, deptName);
+            }
+            // Mark as pending
+            validRows.push({ 
+              raw, 
+              row: { name: sectionName, department_id: `__NEW__:${codeLower}`, semester } 
+            });
+          } else {
+            invalidRows.push({ raw, row: { name: sectionName, department_id: '', semester }, reason: `Department code '${deptCode}' not found and no name provided` });
+          }
+        } else {
+          validRows.push({ 
+            raw, 
+            row: { name: sectionName, department_id: dept.id, semester } 
+          });
+        }
       }
 
-      // Auto-create missing departments if any
-      let createdDeptCount = 0;
-      if (newDeptTokens.size) {
-        const existingCodes = new Set(departments.map(d => d.code?.toUpperCase()).filter(Boolean) as string[]);
-        const existingNames = new Set(departments.map(d => d.name.toLowerCase()));
-        const toInsert: { name: string; code: string }[] = [];
-        const makeCode = (token: string) => {
-          const cleaned = token.trim();
-          let base: string;
-            if (cleaned.length <= 6 && /^[A-Za-z0-9]+$/.test(cleaned)) base = cleaned.toUpperCase();
-            else {
-              const letters = cleaned.split(/\s+/).map(w => w[0]).join('').slice(0,6).toUpperCase();
-              base = letters || cleaned.replace(/[^A-Za-z0-9]/g,'').slice(0,6).toUpperCase() || 'DEPT';
-            }
-          let candidate = base;
-          let i = 1;
-          while (existingCodes.has(candidate)) { candidate = base + i; i++; }
-          existingCodes.add(candidate);
-          return candidate;
-        };
-        newDeptTokens.forEach(tok => {
-          const nameLower = tok.toLowerCase();
-          if (deptByCode.get(nameLower) || deptByName.get(nameLower)) return; // now resolved
-          const code = makeCode(tok);
-          let deptName: string;
-          if (tok.length <= 6 && /^[A-Za-z0-9]+$/.test(tok)) deptName = tok.toUpperCase(); else deptName = tok.split(/\s+/).map(w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
-          if (existingNames.has(deptName.toLowerCase())) return;
-          toInsert.push({ name: deptName, code });
-          existingNames.add(deptName.toLowerCase());
-        });
-        if (toInsert.length) {
-          const { data: inserted, error: deptInsErr } = await supabase.from('departments').insert(toInsert).select('id, name, code');
-          if (!deptInsErr && inserted) {
-            createdDeptCount = inserted.length;
-            interface InsertedDept { id: string; name: string; code?: string }
-            const casted: InsertedDept[] = inserted as InsertedDept[];
-            const updatedDeptList: Department[] = [...departments, ...casted.map(d => ({ id: d.id, name: d.name, code: d.code }))];
-            ({ id: deptById, name: deptByName, code: deptByCode } = rebuildDeptMaps(updatedDeptList));
-          } else if (deptInsErr) {
-            toast({ title: 'Dept Create Error', description: deptInsErr.message, variant: 'destructive' });
+      // Create new departments if any
+      if (newDeptsToCreate.size > 0) {
+        const toInsert = Array.from(newDeptsToCreate.entries()).map(([code, name]) => ({
+          code: code.toUpperCase(), // Standardize code to uppercase
+          name: name
+        }));
+
+        const { data: createdDepts, error: createError } = await supabase
+          .from('departments')
+          .insert(toInsert)
+          .select('id, code');
+
+        if (createError) {
+          console.error('Error creating departments:', createError);
+          toast({ title: "Import Warning", description: "Failed to create new departments.", variant: "destructive" });
+        } else if (createdDepts) {
+          // Update lookup map
+          createdDepts.forEach(d => {
+            if (d.code) deptByCode.set(d.code.toLowerCase(), { id: d.id, name: '', code: d.code } as Department);
+          });
+          toast({ title: "Info", description: `Created ${createdDepts.length} new departments.` });
+        }
+      }
+
+      // Prepare final rows for insertion
+      const finalRows = validRows.map(r => {
+        if (r.row.department_id.startsWith('__NEW__:')) {
+          const code = r.row.department_id.split(':')[1];
+          const dept = deptByCode.get(code);
+          if (dept) {
+            return { ...r.row, department_id: dept.id };
+          } else {
+            return null; // Failed to resolve
           }
         }
-      }
+        return r.row;
+      }).filter(r => r !== null) as { name: string; department_id: string; semester: number }[];
 
-      // Replace placeholder department ids after auto-create
-      for (const v of validRows) {
-        if (v.row.department_id.startsWith('__PENDING__:')) {
-          const token = v.row.department_id.split(':',2)[1];
-          const tokenLower = token.toLowerCase();
-            const dept = deptByCode.get(tokenLower) || deptByName.get(tokenLower);
-            if (dept) v.row.department_id = dept.id; else {
-              invalidRows.push({ raw: v.raw, row: v.row, reason: 'Unknown department (creation failed)' });
-            }
-        }
-      }
-      // Filter again now that unresolved moved to invalid
-      const finalValid = validRows.filter(v => !v.row.department_id.startsWith('__PENDING__:'));
-
-      if (finalValid.length === 0) {
-        toast({ title: 'Import Error', description: `No valid rows. ${invalidRows.length} invalid.`, variant: 'destructive' });
-        event.target.value = '';
+      if (finalRows.length === 0) {
+        toast({ title: "Import Error", description: "No valid rows to import.", variant: "destructive" });
         return;
       }
 
-      // Remove duplicates inside file (same name+dept+semester) matching DB unique constraint (now includes semester)
-      const seen = new Set<string>();
-  const deduped = finalValid.filter(v => {
-        const key = v.row.name + '|' + v.row.department_id + '|' + v.row.semester;
-        if (seen.has(key)) { return false; }
-        seen.add(key); return true;
-      });
-  const skippedDuplicates = finalValid.length - deduped.length;
-      // Determine existing by key (name+department) reflecting actual DB unique constraint
-      const existingKeySet = new Set(
-        sections.map(s => `${s.name}|${s.department_id}|${s.semester}`)
-      );
-      let newCount = 0; let updateCount = 0;
-      const payload = deduped.map(v => {
-        const key = `${v.row.name}|${v.row.department_id}|${v.row.semester}`;
-        if (existingKeySet.has(key)) updateCount++; else newCount++;
-        return v.row; // semester will be updated if different
-      });
+      const { error } = await supabase.from('sections').insert(finalRows);
 
-      let failed = 0; let firstError: string | null = null;
-      if (payload.length) {
-    const { error: upErr } = await supabase.from('sections').upsert(payload, { onConflict: 'name,department_id,semester', ignoreDuplicates: false });
-        if (upErr) {
-          // Fallback row by row
-          newCount = 0; updateCount = 0; // recompute precisely while doing row ops
-          for (const r of payload) {
-      const key = `${r.name}|${r.department_id}|${r.semester}`;
-      const { error: rowErr } = await supabase.from('sections').upsert(r, { onConflict: 'name,department_id,semester', ignoreDuplicates: false });
-            if (rowErr) { failed++; if (!firstError) firstError = rowErr.message; }
-            else {
-              if (existingKeySet.has(key)) {
-                updateCount++;
-              } else {
-                newCount++;
-              }
-            }
-          }
-        }
-      }
-
-  // Build a clearer summary. Always show Inserted/Updated counts (even when 0)
-  // NOTE: DB UNIQUE constraint is (name, department_id, semester) allowing same
-  // section letter across different semesters.
-  const summaryParts: string[] = [];
-      summaryParts.push(`Valid: ${finalValid.length}`);
-  if (invalidRows.length) summaryParts.push(`Invalid: ${invalidRows.length}`);
-  if (skippedDuplicates) summaryParts.push(`In-file dups skipped: ${skippedDuplicates}`);
-  summaryParts.push(`Updated: ${updateCount}`);
-  summaryParts.push(`Inserted: ${newCount}`);
-  if (failed) summaryParts.push(`Failed: ${failed}`);
-  if (firstError) summaryParts.push(`First error: ${firstError}`);
-  if (!newCount && updateCount && !failed) summaryParts.push('All rows already existed (semester updated if different)');
-      if (createdDeptCount) summaryParts.push(`New departments: ${createdDeptCount}`);
-      if (invalidRows.length) {
-        const firstFew = invalidRows.slice(0,3).map(r => r.reason).join(', ');
-        summaryParts.push(`Invalid reasons sample: ${firstFew}`);
-      }
+      if (error) throw error;
 
       toast({
-        title: failed || invalidRows.length ? 'Partial Import' : 'Import Complete',
-        description: `${summaryParts.join(' | ')}`.slice(0, 300)
+        title: "Success",
+        description: `Imported ${finalRows.length} sections successfully`
       });
+      
       fetchSections();
-    } catch (e) {
-      console.error('Error importing sections:', e);
-      toast({ title: 'Error', description: 'Failed to import sections data', variant: 'destructive' });
+      fetchDepartments(); // Refresh departments list
+    } catch (error) {
+      console.error('Error importing sections:', error);
+      toast({
+        title: "Error",
+        description: "Failed to import sections",
+        variant: "destructive"
+      });
     } finally {
+      // Reset file input
       event.target.value = '';
     }
   };
@@ -456,11 +405,11 @@ export default function Sections() {
             size="sm"
             onClick={() => {
               const csvContent =
-                'name,department,semester\n' +
-                'A,CSE,1\n' +
-                'B,CSE,1\n' +
-                'A,ECE,1\n' +
-                '# department column accepts id, code or name. Lines starting with # are ignored';
+                'department_code,department_name,semester,section_code\n' +
+                'CSE,Computer Science Engineering,1,A\n' +
+                'CSE,Computer Science Engineering,1,B\n' +
+                'ECE,Electronics & Communication,1,A\n' +
+                '# department_code is required. department_name is optional but recommended for auto-creation.';
               const blob = new Blob([csvContent], { type: 'text/csv' });
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');

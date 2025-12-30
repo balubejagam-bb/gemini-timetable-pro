@@ -18,12 +18,13 @@ import { TimetableTemplate } from "@/components/TimetableTemplate";
 import { TimetableEditor } from "@/components/TimetableEditor";
 
 const timeSlots = [
-  "9:00-10:00",
-  "10:00-11:00", 
+  "09:00-10:00",
+  "10:15-11:15", 
   "11:15-12:15",
-  "12:15-13:15",
-  "14:00-15:00",
-  "15:00-16:00"
+  "13:15-14:00",
+  "14:00-14:45",
+  "15:00-16:00",
+  "16:00-17:00"
 ];
 
 // Monday to Friday only (as requested)
@@ -682,11 +683,13 @@ export default function TimetableView() {
     const schedule: any = {};
     const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     const timeSlotMap: { [key: number]: string } = {
-      1: "9:00-10:00",
-      2: "10:00-11:00",
-      3: "11:15-12:15",
-      4: "12:15-13:15",
-      5: "14:00-15:00"
+      1: "slot1",
+      2: "slot2",
+      3: "slot3",
+      4: "slot4",
+      5: "slot5",
+      6: "slot6",
+      7: "slot7"
     };
 
     days.forEach(day => {
@@ -911,13 +914,28 @@ export default function TimetableView() {
     return html;
   };
 
-  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, showDownloadButton?: boolean) => (
-    <Card className="mb-6 timetable-grid-export" data-export-key={exportKey || ''}>
+  const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, showDownloadButton?: boolean, isSelected?: boolean, onSelect?: () => void) => {
+    // Determine semester from entries or fallback to selectedSemester
+    const gridSemester = entries.length > 0 ? entries[0].semester : (parseInt(selectedSemester) || 1);
+
+    return (
+    <Card className={`mb-6 timetable-grid-export transition-all ${isSelected ? 'ring-2 ring-primary shadow-lg' : ''}`} data-export-key={exportKey || ''}>
       <CardHeader>
         <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
-            <CardDescription>{entries.length} entries loaded</CardDescription>
+          <div className="flex items-center gap-3">
+            {onSelect && (
+              <div onClick={(e) => e.stopPropagation()}>
+                <Checkbox 
+                  checked={isSelected} 
+                  onCheckedChange={onSelect}
+                  className="h-5 w-5"
+                />
+              </div>
+            )}
+            <div>
+              <CardTitle className="text-lg md:text-xl">{title}</CardTitle>
+              <CardDescription>{entries.length} entries loaded</CardDescription>
+            </div>
           </div>
           {showDownloadButton && exportKey && (
             <Button
@@ -959,7 +977,7 @@ export default function TimetableView() {
                   const entry = getTimetableEntry(entries, dayIndex + 1, index + 1);
                   
                   if (!entry) {
-                    const freePeriodText = getDefaultFreePeriod(parseInt(selectedSemester), dayIndex, index);
+                    const freePeriodText = getDefaultFreePeriod(gridSemester, dayIndex, index);
                     return (
                       <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-xs relative group">
                         {isMobile ? (freePeriodText === 'Library Period' ? 'Library' : 'Intern') : freePeriodText}
@@ -1008,9 +1026,205 @@ export default function TimetableView() {
       </CardContent>
     </Card>
   );
+  };
 
   const selectedDeptName = departments.find(d => d.id === selectedDepartment)?.name || "";
   const selectedSectionName = sections.find(s => s.id === selectedSection)?.name || "";
+
+  const handleDownloadAll = async () => {
+    try {
+      setExporting(true);
+      
+      if (useUniversityTemplate) {
+        const pdf = new jsPDF('portrait', 'mm', 'a4');
+        let first = true;
+        const { createRoot } = await import('react-dom/client');
+        
+        // Show progress toast
+        const totalSections = Object.values(allTimetablesData).reduce((acc, dept) => acc + Object.keys(dept.sections).length, 0);
+        toast({ title: 'Exporting...', description: `Generating University Format PDF for ${totalSections} timetables. This may take a moment.` });
+
+        // Iterate through all departments and sections
+        for (const [deptId, dept] of Object.entries(allTimetablesData)) {
+          for (const [sectionId, section] of Object.entries(dept.sections)) {
+            // Check if this timetable is selected (if any selection exists)
+            const exportKey = `${deptId}|${section.sectionName}|${section.semester}`;
+            if (selectedExportKeys.length > 0 && !selectedExportKeys.includes(exportKey)) {
+              continue;
+            }
+
+            const entries = section.entries;
+            
+            // Prepare data for template (copied from exportWithUniversityTemplate)
+            const schedule: any = {};
+            const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
+            const timeSlotMap: { [key: number]: string } = {
+              1: "slot1",
+              2: "slot2",
+              3: "slot3",
+              4: "slot4",
+              5: "slot5",
+              6: "slot6",
+              7: "slot7"
+            };
+
+            days.forEach(day => {
+              schedule[day] = {};
+            });
+
+            const roomCounts = new Map<string, number>();
+            
+            entries.forEach(entry => {
+              const dayName = days[entry.day_of_week - 1];
+              const timeSlot = timeSlotMap[entry.time_slot];
+              if (dayName && timeSlot) {
+                schedule[dayName][timeSlot] = {
+                  subject: entry.subjects.name,
+                  code: entry.subjects.code,
+                  staff: entry.staff.name,
+                  room: entry.rooms.room_number,
+                  type: entry.subjects.name.toLowerCase().includes('lab') ? 'LAB' : 'Theory'
+                };
+                const room = entry.rooms.room_number;
+                roomCounts.set(room, (roomCounts.get(room) || 0) + 1);
+              }
+            });
+
+            let primaryRoom = "Multiple";
+            if (roomCounts.size === 1) {
+              primaryRoom = Array.from(roomCounts.keys())[0];
+            } else if (roomCounts.size > 0) {
+              let maxCount = 0;
+              roomCounts.forEach((count, room) => {
+                if (count > maxCount) {
+                  maxCount = count;
+                  primaryRoom = room;
+                }
+              });
+            }
+
+            const subjectMap = new Map();
+            entries.forEach(entry => {
+              if (!subjectMap.has(entry.subjects.code)) {
+                subjectMap.set(entry.subjects.code, {
+                  code: entry.subjects.code,
+                  name: entry.subjects.name,
+                  faculty: entry.staff.name
+                });
+              }
+            });
+            const subjects = Array.from(subjectMap.values());
+
+            const today = new Date();
+            const currentYear = today.getFullYear();
+            const nextYear = currentYear + 1;
+            const formattedDate = today.toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: '2-digit',
+              year: 'numeric'
+            });
+
+            // Create temp container
+            const tempDiv = document.createElement('div');
+            tempDiv.style.position = 'absolute';
+            tempDiv.style.left = '-9999px';
+            tempDiv.style.width = '210mm';
+            document.body.appendChild(tempDiv);
+
+            const root = createRoot(tempDiv);
+            
+            await new Promise<void>((resolve) => {
+              root.render(
+                <TimetableTemplate
+                  title="SCHOOL OF COMPUTING"
+                  subtitle={dept.departmentName}
+                  department={dept.departmentName}
+                  semester={`Semester ${section.semester} (${currentYear}-${nextYear.toString().slice(-2)})`}
+                  section={section.sectionName}
+                  roomNo={primaryRoom}
+                  effectiveDate={formattedDate}
+                  schedule={schedule}
+                  subjects={subjects}
+                  pageNumber={1}
+                />
+              );
+              setTimeout(resolve, 500);
+            });
+
+            const templateElement = tempDiv.querySelector('#timetable-pdf-template') as HTMLElement || tempDiv;
+            const canvas = await html2canvas(templateElement, {
+              scale: 2,
+              backgroundColor: '#ffffff',
+              useCORS: true,
+              logging: false,
+              width: 794,
+              height: 1123
+            });
+
+            const imgData = canvas.toDataURL('image/png');
+            
+            if (!first) pdf.addPage();
+            pdf.addImage(imgData, 'PNG', 0, 0, 210, 297);
+            first = false;
+
+            root.unmount();
+            document.body.removeChild(tempDiv);
+          }
+        }
+        
+        pdf.save(`all-timetables-university-format-${new Date().toISOString().split('T')[0]}.pdf`);
+        toast({ title: 'Exported', description: 'All timetables downloaded successfully in University Format' });
+
+      } else {
+        // Existing logic for simple grid export
+        injectPdfStyles();
+        
+        // all timetables: export all regardless of selection
+        const allGrids = Array.from(document.querySelectorAll('.timetable-grid-export')) as HTMLElement[];
+        
+        if (!allGrids.length) {
+          toast({ title: 'Nothing to export', description: 'No timetables loaded', variant: 'destructive' });
+          return;
+        }
+        
+        const pdf = new jsPDF('landscape', 'mm', 'a4');
+        let first = true;
+        
+        // Show progress toast
+        toast({ title: 'Exporting...', description: `Generating PDF for ${allGrids.length} timetables. This may take a moment.` });
+
+        for (const grid of Array.from(allGrids)) {
+          const canvas = await html2canvas(grid as HTMLElement, { scale: 2, backgroundColor: '#ffffff', useCORS: true, allowTaint: true, logging: false });
+          const imgData = canvas.toDataURL('image/png');
+          
+          if (!first) pdf.addPage();
+          
+          const pageWidth = pdf.internal.pageSize.getWidth();
+          const pageHeight = pdf.internal.pageSize.getHeight();
+          const margin = 10;
+          const usableWidth = pageWidth - margin * 2;
+          const imgHeight = canvas.height * (usableWidth / canvas.width);
+          
+          let y = margin;
+          if (imgHeight < pageHeight - margin * 2) {
+            y = (pageHeight - imgHeight) / 2;
+          }
+          
+          pdf.addImage(imgData, 'PNG', margin, y, usableWidth, imgHeight);
+          first = false;
+        }
+        
+        pdf.save(`all-timetables-${new Date().toISOString().split('T')[0]}.pdf`);
+        toast({ title: 'Exported', description: 'All timetables downloaded successfully' });
+        removePdfStyles();
+      }
+    } catch (err) {
+      console.error('PDF export error', err);
+      toast({ title: 'Export failed', description: 'Could not generate PDF', variant: 'destructive' });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const handleExportPDF = async () => {
     try {
@@ -1149,6 +1363,27 @@ export default function TimetableView() {
             <Printer className="w-4 h-4" />
             {isMobile ? "Print" : "Print"}
           </Button>
+          <Button
+            variant="outline"
+            size={isMobile ? "sm" : "default"}
+            className="gap-2"
+            onClick={() => navigate('/students')}
+          >
+            <User className="w-4 h-4" />
+            {isMobile ? "Students" : "Student Timetables"}
+          </Button>
+          {viewMode === 'all' && (
+            <Button
+              variant="default"
+              size={isMobile ? "sm" : "default"}
+              className="gap-2"
+              onClick={handleDownloadAll}
+              disabled={exporting || !Object.keys(allTimetablesData).length}
+            >
+              <Download className="w-4 h-4" />
+              {exporting ? 'Downloading...' : (selectedExportKeys.length > 0 ? `Download Selected (${selectedExportKeys.length})` : 'Download All')}
+            </Button>
+          )}
           {viewMode === 'all' ? (
             <Button
               variant="outline"
@@ -1491,12 +1726,22 @@ export default function TimetableView() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <Input
-                placeholder="Search by department or section name..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="max-w-md"
-              />
+              <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                <Input
+                  placeholder="Search by department or section name..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="max-w-md"
+                />
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={selectAllExports}>
+                    Select All
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={clearAllExports} disabled={selectedExportKeys.length === 0}>
+                    Clear Selection ({selectedExportKeys.length})
+                  </Button>
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -1560,7 +1805,9 @@ export default function TimetableView() {
                           section.entries,
                           `${section.sectionName} - Semester ${section.semester}`,
                           `${deptId}|${section.sectionName}|${section.semester}`,
-                          true
+                          true,
+                          selectedExportKeys.includes(`${deptId}|${section.sectionName}|${section.semester}`),
+                          () => toggleExportKey(`${deptId}|${section.sectionName}|${section.semester}`)
                         )}
                       </div>
                     ))}

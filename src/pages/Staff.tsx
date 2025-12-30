@@ -297,6 +297,7 @@ export default function Staff() {
       }
       const header = lines[0].toLowerCase();
       const isHeader = header.includes('name') && header.includes('department');
+      const hasStaffCode = header.includes('staff_code');
       const dataLines = isHeader ? lines.slice(1) : lines;
 
       // Department lookup maps
@@ -313,7 +314,16 @@ export default function Staff() {
 
       for (const raw of dataLines) {
         const cols = raw.split(',').map(c => c.trim());
-  const [name, email, phone, deptToken, designationRaw, maxStr] = cols;
+        let name, email, phone, deptToken, designationRaw, maxStr;
+
+        if (hasStaffCode) {
+           // Format: staff_code, staff_name, email, phone, department, designation, max_hours, can_teach
+           [, name, email, phone, deptToken, designationRaw, maxStr] = cols;
+        } else {
+           // Format: name, email, phone, department, designation, max_hours
+           [name, email, phone, deptToken, designationRaw, maxStr] = cols;
+        }
+
         if (!name) { invalid.push({ raw, reason: 'Missing name' }); continue; }
         let dept: Department | undefined = undefined;
         if (deptToken) dept = byId.get(deptToken) || byCode.get(deptToken.toLowerCase()) || byName.get(deptToken.toLowerCase());
