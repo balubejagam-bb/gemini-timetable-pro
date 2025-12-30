@@ -357,13 +357,115 @@ export class ClientTimetableGenerator {
       
       // Validate and save entries
       console.log('Validating and saving entries...');
-  let validatedEntries = this.validateEntries(timetableEntries, selectedSemester);
-  // Enforce minimum daily load of 3 classes (days 1-6) while allowing free periods beyond that
-  validatedEntries = this.enforceMinimumDailyClasses(validatedEntries, data, selectedSemester);
-      
+      // Remove or fix entries that would violate staff, room, or section constraints
+      const seenStaff = new Set();
+      const seenRoom = new Set();
+      const seenSection = new Set();
+      const filteredEntries = [];
+      for (const entry of timetableEntries) {
+        let staffKey = `${entry.staff_id}:${entry.day_of_week}:${entry.time_slot}`;
+        let roomKey = `${entry.room_id}:${entry.day_of_week}:${entry.time_slot}`;
+        let sectionKey = `${entry.section_id}:${entry.day_of_week}:${entry.time_slot}`;
+        // If conflict, try to find an alternative staff or room, or fill with offline logic
+        let fixed = false;
+        if (seenStaff.has(staffKey) || seenRoom.has(roomKey) || seenSection.has(sectionKey)) {
+          // Try to find an alternative staff
+          const section = data.sections.find(s => s.id === entry.section_id);
+          const subject = data.subjects.find(s => s.id === entry.subject_id);
+          let altStaff = data.staff;
+          if (subject && data.staffSubjects) {
+            // Only staff who can teach this subject
+            const eligibleStaffIds = data.staffSubjects.filter(ss => ss.subject_id === subject.id).map(ss => ss.staff_id);
+            if (eligibleStaffIds.length > 0) {
+              altStaff = data.staff.filter(s => eligibleStaffIds.includes(s.id));
+            }
+          }
+          for (const staff of altStaff) {
+            staffKey = `${staff.id}:${entry.day_of_week}:${entry.time_slot}`;
+            if (!seenStaff.has(staffKey)) {
+              entry.staff_id = staff.id;
+              fixed = true;
+              break;
+            }
+          }
+          // Try to find an alternative room if still conflict
+          if (!fixed) {
+            let altRooms = data.rooms;
+            if (subject && subject.subject_type && subject.subject_type.toLowerCase().includes('lab')) {
+              altRooms = data.rooms.filter(r => r.room_type && r.room_type.toLowerCase().includes('lab'));
+            }
+            for (const room of altRooms) {
+              roomKey = `${room.id}:${entry.day_of_week}:${entry.time_slot}`;
+              if (!seenRoom.has(roomKey)) {
+                entry.room_id = room.id;
+                fixed = true;
+                break;
+              }
+            }
+          }
+          // If still not fixed, try to fill with offline logic (rotate staff/room/subject)
+          if (!fixed && section && data.subjects.length > 0 && data.staff.length > 0 && data.rooms.length > 0) {
+            // Find a subject for this section not already scheduled at this slot
+            const scheduledSubjects = filteredEntries
+              .filter(e => e.section_id === section.id && e.day_of_week === entry.day_of_week && e.time_slot === entry.time_slot)
+              .map(e => e.subject_id);
+            const availableSubjects = data.subjects.filter(s => !scheduledSubjects.includes(s.id));
+            for (const subject of availableSubjects) {
+              // Find eligible staff for this subject
+              let eligibleStaff = data.staff;
+              if (data.staffSubjects) {
+                const eligibleStaffIds = data.staffSubjects.filter(ss => ss.subject_id === subject.id).map(ss => ss.staff_id);
+                if (eligibleStaffIds.length > 0) {
+                  eligibleStaff = data.staff.filter(s => eligibleStaffIds.includes(s.id));
+                }
+              }
+              for (const staff of eligibleStaff) {
+                staffKey = `${staff.id}:${entry.day_of_week}:${entry.time_slot}`;
+                if (seenStaff.has(staffKey)) continue;
+                // Find available room
+                let possibleRooms = data.rooms;
+                if (subject.subject_type && subject.subject_type.toLowerCase().includes('lab')) {
+                  possibleRooms = data.rooms.filter(r => r.room_type && r.room_type.toLowerCase().includes('lab'));
+                }
+                for (const room of possibleRooms) {
+                  roomKey = `${room.id}:${entry.day_of_week}:${entry.time_slot}`;
+                  if (seenRoom.has(roomKey)) continue;
+                  // All constraints passed, fill this slot
+                  filteredEntries.push({
+                    section_id: section.id,
+                    subject_id: subject.id,
+                    staff_id: staff.id,
+                    room_id: room.id,
+                    day_of_week: entry.day_of_week,
+                    time_slot: entry.time_slot
+                  });
+                  seenStaff.add(staffKey);
+                  seenRoom.add(roomKey);
+                  seenSection.add(sectionKey);
+                  fixed = true;
+                  break;
+                }
+                if (fixed) break;
+              }
+              if (fixed) break;
+            }
+          }
+        }
+        staffKey = `${entry.staff_id}:${entry.day_of_week}:${entry.time_slot}`;
+        roomKey = `${entry.room_id}:${entry.day_of_week}:${entry.time_slot}`;
+        sectionKey = `${entry.section_id}:${entry.day_of_week}:${entry.time_slot}`;
+        if (!seenStaff.has(staffKey) && !seenRoom.has(roomKey) && !seenSection.has(sectionKey)) {
+          seenStaff.add(staffKey);
+          seenRoom.add(roomKey);
+          seenSection.add(sectionKey);
+          filteredEntries.push(entry);
+        }
+      }
+      let validatedEntries = this.validateEntries(filteredEntries, selectedSemester);
+      // Enforce minimum daily load of 3 classes (days 1-6) while allowing free periods beyond that
+      validatedEntries = this.enforceMinimumDailyClasses(validatedEntries, data, selectedSemester);
       if (validatedEntries.length > 0) {
         await this.saveTimetable(validatedEntries);
-        
         return {
           success: true,
           message: `Timetable generated successfully using client-side AI integration!`,
@@ -1426,7 +1528,7 @@ export class SimpleTimetableGenerator {
       // In Auto Mode, filter by department to ensure correct mapping
       // Also ensure we only schedule subjects for the correct semester
       let sectionSubjects = options?.subjects 
-        ? data.subjects.filter(s => s.semester === section.semester) 
+        ? data.subjects.filter(s => ('semester' in s) && (s as any).semester === section.semester)
         : data.subjects.filter(s => s.department_id === section.department_id);
       
       // Sort subjects: Labs/Practical first (harder to schedule), then by hours descending
@@ -1470,8 +1572,13 @@ export class SimpleTimetableGenerator {
           return;
         }
 
-        // Sort staff by load (ascending) to balance workload
+        // Sort staff by load (ascending) to balance workload, then rotate/shuffle to avoid always picking the same
         availableStaff.sort((a, b) => (staffLoad[a.id] || 0) - (staffLoad[b.id] || 0));
+        // Rotate staff list for each subject to distribute assignments
+        if (availableStaff.length > 1) {
+          const rotateBy = Math.floor(Math.random() * availableStaff.length);
+          availableStaff = availableStaff.slice(rotateBy).concat(availableStaff.slice(0, rotateBy));
+        }
         
         // Find appropriate rooms
         const appropriateRooms = isLab
