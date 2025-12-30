@@ -621,7 +621,7 @@ export class ClientTimetableGenerator {
 
 CRITICAL DATABASE CONSTRAINTS (WILL CAUSE SAVE FAILURES IF VIOLATED):
 1. UNIQUE(staff_id, day_of_week, time_slot) - Same staff cannot teach multiple classes at same time
-2. UNIQUE(room_id, day_of_week, time_slot) - Same room cannot host multiple classes at same time  
+2. UNIQUE(room_id, day_of_week, time_slot) - Same room cannot host multiple classes at same time
 3. UNIQUE(section_id, day_of_week, time_slot) - Same section cannot have multiple classes at same time
 
 TIMETABLE FORMAT REQUIREMENTS (Based on MBU Format):
@@ -655,10 +655,12 @@ CONFLICT RESOLUTION STRATEGY:
 - Prioritize avoiding conflicts over perfect distribution
 - For theory+lab subjects: Schedule lab sessions in lab rooms and theory in regular classrooms
 
+IMPORTANT: If a conflict is unavoidable (e.g., all staff are busy at a slot), you MUST still generate a timetable by updating the existing slot with the new subject/staff/room for that section, day, and time. Do NOT leave any slot empty or skip generation due to conflicts. Always ensure a complete timetable is generated, even if it means overwriting previous assignments for a slot.
+
 OPTIMIZATION GOALS:
 - Schedule all subjects according to their hours_per_week requirement
-- Minimize scheduling conflicts 
-- Balance faculty workload (respect max_hours_per_week)  
+- Minimize scheduling conflicts
+- Balance faculty workload (respect max_hours_per_week)
 - Use room capacity efficiently
 - Spread lab sessions across different days to avoid congestion
 - Ensure at least 3 classes per section per day (may repeat subjects if necessary to meet the minimum)
@@ -672,7 +674,7 @@ Return ONLY a valid JSON array with no additional text or explanation:
 [
   {
     "section_id": "uuid-here",
-    "subject_id": "uuid-here", 
+    "subject_id": "uuid-here",
     "staff_id": "uuid-here",
     "room_id": "uuid-here",
     "day_of_week": 1,
@@ -683,7 +685,7 @@ Return ONLY a valid JSON array with no additional text or explanation:
 
 IMPORTANT: Before adding each entry, verify:
 - This staff_id is not already used at this day_of_week + time_slot
-- This room_id is not already used at this day_of_week + time_slot  
+- This room_id is not already used at this day_of_week + time_slot
 - This section_id is not already used at this day_of_week + time_slot
 - Use time_slot values 1-5 only (MBU format)
 - Use day_of_week values 1-6 (Monday to Saturday)
@@ -692,7 +694,8 @@ ${additionalNotes}
 
 Generate entries for ALL sections and subjects. Ensure NO DUPLICATE assignments for the same day/time combination.
 If a section would otherwise have fewer than 3 classes on a day, you may repeat a subject already scheduled that week for that section to reach the minimum of 3.
-For subjects needing both theory and lab: create separate entries with different room types but same subject_id.`;
+For subjects needing both theory and lab: create separate entries with different room types but same subject_id.
+If a slot is already occupied, update it with the new assignment for that section, day, and time.`;
 
     const response = await fetch(
   `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${this.googleApiKey}`,
@@ -978,22 +981,38 @@ For subjects needing both theory and lab: create separate entries with different
           code: error.code
         });
         
-        // Try individual inserts with conflict resolution
-        console.log('Attempting individual inserts with conflict handling...');
+        // Try individual inserts with update on conflict
+        console.log('Attempting individual inserts with update on conflict...');
         let successCount = 0;
-        let conflictCount = 0;
+        let updateCount = 0;
         let fatalErrorCount = 0;
         
         for (const entry of entries) {
           try {
+            // Try insert first
             const { error: insertError } = await supabase
               .from('timetables')
               .insert(entry);
-            
             if (insertError) {
               if (insertError.message.includes('duplicate') || insertError.message.includes('violates unique constraint')) {
-                console.log(`Skipping duplicate entry: Day ${entry.day_of_week}, Slot ${entry.time_slot}`);
-                conflictCount++;
+                // If duplicate, perform update
+                const { error: updateError } = await supabase
+                  .from('timetables')
+                  .update({
+                    subject_id: entry.subject_id,
+                    staff_id: entry.staff_id,
+                    room_id: entry.room_id,
+                    semester: entry.semester
+                  })
+                  .eq('section_id', entry.section_id)
+                  .eq('day_of_week', entry.day_of_week)
+                  .eq('time_slot', entry.time_slot);
+                if (updateError) {
+                  console.error(`Failed to update duplicate entry:`, updateError);
+                  fatalErrorCount++;
+                } else {
+                  updateCount++;
+                }
               } else {
                 throw insertError;
               }
@@ -1001,21 +1020,21 @@ For subjects needing both theory and lab: create separate entries with different
               successCount++;
             }
           } catch (individualError) {
-            console.error(`Failed to insert individual entry:`, individualError);
+            console.error(`Failed to insert/update individual entry:`, individualError);
             fatalErrorCount++;
           }
         }
         
-        if (successCount === 0 && conflictCount > 0 && fatalErrorCount === 0) {
-          console.warn('All offline timetable entries already existed. Treating as no-op.');
+        if (successCount === 0 && updateCount > 0 && fatalErrorCount === 0) {
+          console.warn('All offline timetable entries already existed and were updated.');
           return;
         }
 
-        if (successCount === 0) {
-          throw new Error(`Failed to insert any timetable entries. ${conflictCount + fatalErrorCount} conflicts detected.`);
+        if (successCount === 0 && updateCount === 0) {
+          throw new Error(`Failed to insert or update any timetable entries. ${fatalErrorCount} errors detected.`);
         }
         
-        console.log(`Successfully inserted ${successCount} entries, skipped ${conflictCount} conflicts`);
+        console.log(`Successfully inserted ${successCount} entries, updated ${updateCount} duplicates`);
         return;
       }
 
@@ -1256,7 +1275,7 @@ export class SimpleTimetableGenerator {
       await this.clearExistingTimetables(data.sections.map(s => s.id));
       
       // Generate using simple algorithm
-      const timetableEntries = this.generateSimpleSchedule(data, selectedSemester);
+      const timetableEntries = this.generateSimpleSchedule(data, selectedSemester, options);
       
       if (timetableEntries.length > 0) {
         await this.saveTimetable(timetableEntries);
@@ -1364,7 +1383,7 @@ export class SimpleTimetableGenerator {
     }
   }
 
-  private generateSimpleSchedule(data: GenerationData, selectedSemester: number): TimetableEntry[] {
+  private generateSimpleSchedule(data: GenerationData, selectedSemester: number, options?: SimpleGenerationOptions): TimetableEntry[] {
     const entries: TimetableEntry[] = [];
     const timeSlots = 7; // 7 periods per day
     const days = 5; // Monday to Friday only
