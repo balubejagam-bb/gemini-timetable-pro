@@ -301,6 +301,8 @@ interface RoomSelectionOptions {
 interface AdvancedGenerationOptions extends RoomSelectionOptions {
   sections?: string[];
   subjects?: string[];
+  labSubjectIds?: string[];
+  enforceContinuousLabPeriods?: boolean;
   staff?: string[];
   advancedMode?: boolean;
 }
@@ -333,10 +335,8 @@ export class ClientTimetableGenerator {
       console.log('Starting client-side timetable generation...');
       
       // Validate input
-      if (!selectedDepartments || selectedDepartments.length === 0) {
-        if (!options?.advancedMode || !options?.subjects || options.subjects.length === 0) {
-          throw new Error('At least one department must be selected in standard mode, or subjects in advanced mode');
-        }
+      if ((!selectedDepartments || selectedDepartments.length === 0) && (!options?.advancedMode || !options?.subjects || options.subjects.length === 0)) {
+        throw new Error('At least one department must be selected in standard mode, or subjects in advanced mode');
       }
       
       if (!selectedSemester || selectedSemester < 1 || selectedSemester > 8) {
@@ -462,6 +462,10 @@ export class ClientTimetableGenerator {
         }
       }
       let validatedEntries = this.validateEntries(filteredEntries, selectedSemester);
+      // Enforce one lab subject block per section/day before any coverage backfill.
+      validatedEntries = this.enforceSingleLabBlockPerDay(validatedEntries, data, options);
+      // Backfill missing subject hours so selected subjects are actually represented in the output timetable.
+      validatedEntries = this.enforceSubjectCoverage(validatedEntries, data, selectedSemester, options);
       // Enforce minimum daily load of 3 classes (days 1-6) while allowing free periods beyond that
       validatedEntries = this.enforceMinimumDailyClasses(validatedEntries, data, selectedSemester);
       if (validatedEntries.length > 0) {
@@ -484,6 +488,79 @@ export class ClientTimetableGenerator {
         error: error.message
       };
     }
+  }
+
+  private enforceSingleLabBlockPerDay(
+    entries: TimetableEntry[],
+    data: GenerationData,
+    options?: AdvancedGenerationOptions
+  ): TimetableEntry[] {
+    const subjectMap = new Map(data.subjects.map(s => [s.id, s]));
+    const selectedLabSubjectIds = new Set(options?.labSubjectIds || []);
+    const enforceContinuousLabs = options?.enforceContinuousLabPeriods !== false;
+
+    const isLabSubject = (subjectId: string): boolean => {
+      const subject = subjectMap.get(subjectId);
+      const byType = !!subject?.subject_type && (subject.subject_type.toLowerCase().includes('lab') || subject.subject_type.toLowerCase().includes('practical'));
+      return byType || selectedLabSubjectIds.has(subjectId);
+    };
+
+    const grouped = new Map<string, TimetableEntry[]>();
+    for (const entry of entries) {
+      const key = `${entry.section_id}:${entry.day_of_week}`;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key)!.push(entry);
+    }
+
+    const normalized: TimetableEntry[] = [];
+
+    for (const [, dayEntries] of grouped) {
+      const nonLabs = dayEntries.filter(e => !isLabSubject(e.subject_id));
+      const labs = dayEntries.filter(e => isLabSubject(e.subject_id));
+      normalized.push(...nonLabs);
+
+      if (labs.length === 0) continue;
+
+      const labsBySubject = new Map<string, TimetableEntry[]>();
+      for (const entry of labs) {
+        if (!labsBySubject.has(entry.subject_id)) labsBySubject.set(entry.subject_id, []);
+        labsBySubject.get(entry.subject_id)!.push(entry);
+      }
+
+      // Pick a single lab subject for the day: most entries first, then earliest slot.
+      const rankedSubjects = Array.from(labsBySubject.entries()).sort((a, b) => {
+        if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+        const aMin = Math.min(...a[1].map(e => e.time_slot));
+        const bMin = Math.min(...b[1].map(e => e.time_slot));
+        return aMin - bMin;
+      });
+
+      const chosenSubjectEntries = rankedSubjects[0][1].slice().sort((a, b) => a.time_slot - b.time_slot);
+      const maxKeep = enforceContinuousLabs ? 2 : 1;
+      const kept: TimetableEntry[] = [];
+
+      if (enforceContinuousLabs && chosenSubjectEntries.length >= 2) {
+        for (let i = 0; i < chosenSubjectEntries.length - 1; i++) {
+          if (chosenSubjectEntries[i + 1].time_slot === chosenSubjectEntries[i].time_slot + 1) {
+            kept.push(chosenSubjectEntries[i], chosenSubjectEntries[i + 1]);
+            break;
+          }
+        }
+      }
+
+      if (kept.length === 0) {
+        if (enforceContinuousLabs) {
+          // Keep only one orphan slot; coverage pass will place proper 2-period blocks on other days.
+          kept.push(...chosenSubjectEntries.slice(0, 1));
+        } else {
+          kept.push(...chosenSubjectEntries.slice(0, maxKeep));
+        }
+      }
+
+      normalized.push(...kept);
+    }
+
+    return normalized;
   }
 
   private async fetchData(
@@ -712,11 +789,21 @@ export class ClientTimetableGenerator {
       }))
     };
 
+    const selectedSubjectTargets = options?.subjects?.length
+      ? data.subjects
+          .filter(s => options.subjects!.includes(s.id))
+          .map(s => ({ id: s.id, name: s.name, code: s.code, hours_per_week: s.hours_per_week }))
+      : [];
+
     const additionalNotes = options?.advancedMode ? 
       `IMPORTANT ADVANCED MODE SELECTION:
       - User has specifically selected ${options?.sections?.length || 0} sections
       - User has specifically selected ${options?.subjects?.length || 0} subjects  
+      - User has marked ${options?.labSubjectIds?.length || 0} selected subjects as labs
+      - Selected labSubjectIds: ${JSON.stringify(options?.labSubjectIds || [])}
+      - Selected subject targets (must be covered): ${JSON.stringify(selectedSubjectTargets)}
       - User has specifically selected ${options?.staff?.length || 0} staff members
+      - Continuous lab periods required: ${options?.enforceContinuousLabPeriods === false ? 'NO' : 'YES'}
       When in advanced mode, ONLY use the sections, subjects, and staff that have been explicitly provided in the data.` : '';
 
     const prompt = `You are an AI timetable generator for Mohan Babu University. Generate a comprehensive timetable in JSON format for semester ${selectedSemester}.
@@ -749,6 +836,10 @@ MANDATORY SCHEDULING RULES:
 8. NO section conflicts: Each section can only have ONE class at any given day/time_slot.
 9. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms.
 10. Theory subjects can use any classroom or lab.
+11. If labSubjectIds are provided and continuous labs are enabled, those subjects MUST be scheduled as 2 consecutive periods in the same day with the same staff and room.
+12. Per section per day, schedule AT MOST ONE lab subject and AT MOST ONE 2-period lab block (never 4 lab periods in a day).
+12. For each section on a given day, schedule at most ONE lab subject block (no two different lab subjects on the same day).
+13. Never schedule the same lab subject as two separate blocks on the same day (avoid 4 periods of same lab in one day).
 
 CONFLICT RESOLUTION STRATEGY:
 - If a staff member is already assigned to day X, slot Y, find different staff for other subjects at that time
@@ -862,6 +953,168 @@ If a slot is already occupied, update it with the new assignment for that sectio
     return parsedData;
   }
 
+  private enforceSubjectCoverage(
+    entries: TimetableEntry[],
+    data: GenerationData,
+    selectedSemester: number,
+    options?: AdvancedGenerationOptions
+  ): TimetableEntry[] {
+    const result: TimetableEntry[] = [...entries];
+    const days = [1, 2, 3, 4, 5, 6];
+    const timeSlots = [1, 2, 3, 4, 5];
+    const selectedLabSubjectIds = new Set(options?.labSubjectIds || []);
+    const enforceContinuousLabs = options?.enforceContinuousLabPeriods !== false;
+
+    const staffSlots = new Set(result.map(e => `${e.staff_id}:${e.day_of_week}:${e.time_slot}`));
+    const roomSlots = new Set(result.map(e => `${e.room_id}:${e.day_of_week}:${e.time_slot}`));
+    const sectionSlots = new Set(result.map(e => `${e.section_id}:${e.day_of_week}:${e.time_slot}`));
+    const sectionDayLabSubject = new Map<string, string>();
+    const sectionDaySubjectLabCount = new Map<string, number>();
+
+    const subjectStaffMap = new Map<string, Staff[]>();
+    data.staffSubjects.forEach(ss => {
+      const st = data.staff.find(s => s.id === ss.staff_id);
+      if (!st) return;
+      if (!subjectStaffMap.has(ss.subject_id)) subjectStaffMap.set(ss.subject_id, []);
+      subjectStaffMap.get(ss.subject_id)!.push(st);
+    });
+
+    const sectionList = data.sections.filter(s => s.semester === selectedSemester);
+
+    // Seed lab day tracking from existing entries.
+    for (const entry of result) {
+      const subject = data.subjects.find(s => s.id === entry.subject_id);
+      const isLabByType = subject?.subject_type?.toLowerCase().includes('lab') || subject?.subject_type?.toLowerCase().includes('practical');
+      const isLab = !!isLabByType || selectedLabSubjectIds.has(entry.subject_id);
+      if (!isLab) continue;
+      const dayKey = `${entry.section_id}:${entry.day_of_week}`;
+      if (!sectionDayLabSubject.has(dayKey)) {
+        sectionDayLabSubject.set(dayKey, entry.subject_id);
+      }
+      const subjectDayKey = `${entry.section_id}:${entry.day_of_week}:${entry.subject_id}`;
+      sectionDaySubjectLabCount.set(subjectDayKey, (sectionDaySubjectLabCount.get(subjectDayKey) || 0) + 1);
+    }
+
+    for (const section of sectionList) {
+      const sectionSubjects = options?.subjects?.length
+        ? data.subjects.filter(sub => options.subjects!.includes(sub.id))
+        : data.subjects.filter(sub => sub.department_id === section.department_id);
+
+      for (const subject of sectionSubjects) {
+        const isLabByType = subject.subject_type?.toLowerCase().includes('lab') || subject.subject_type?.toLowerCase().includes('practical');
+        const isLab = isLabByType || selectedLabSubjectIds.has(subject.id);
+        const blockSize = isLab && enforceContinuousLabs ? 2 : 1;
+        const rawHours = Math.max(1, Number(subject.hours_per_week) || 1);
+        const targetHours = blockSize === 2 ? Math.ceil(rawHours / 2) * 2 : rawHours;
+
+        let scheduled = result.filter(e => e.section_id === section.id && e.subject_id === subject.id).length;
+        if (scheduled >= targetHours) continue;
+
+        const eligibleStaff = subjectStaffMap.get(subject.id)?.length
+          ? subjectStaffMap.get(subject.id)!
+          : data.staff.filter(st => st.department_id === section.department_id);
+        const fallbackStaff = eligibleStaff.length ? eligibleStaff : data.staff;
+        const roomPool = isLab
+          ? data.rooms.filter(r => (r.room_type || '').toLowerCase().includes('lab') || (r.room_type || '').toLowerCase().includes('practical'))
+          : data.rooms;
+        const fallbackRooms = roomPool.length ? roomPool : data.rooms;
+
+        let placedSomething = true;
+        while (scheduled < targetHours && placedSomething) {
+          placedSomething = false;
+
+          for (const day of days) {
+            if (placedSomething) break;
+
+            if (isLab) {
+              const dayKey = `${section.id}:${day}`;
+              const existingLabSubject = sectionDayLabSubject.get(dayKey);
+              // Only one lab subject per section/day.
+              if (existingLabSubject && existingLabSubject !== subject.id) {
+                continue;
+              }
+              const subjectDayKey = `${section.id}:${day}:${subject.id}`;
+              const alreadyPlacedForSubject = sectionDaySubjectLabCount.get(subjectDayKey) || 0;
+              // Strict rule: one lab block per day. If any lab periods already exist for this subject/day,
+              // do not place another block in the same day.
+              if (enforceContinuousLabs && alreadyPlacedForSubject > 0) {
+                continue;
+              }
+              // Fallback rule when continuous is disabled.
+              if (!enforceContinuousLabs && alreadyPlacedForSubject >= blockSize) {
+                continue;
+              }
+            }
+
+            for (const slot of timeSlots) {
+              if (placedSomething) break;
+              if (blockSize === 2 && slot === 5) continue;
+
+              let sectionFree = true;
+              for (let i = 0; i < blockSize; i++) {
+                const sectionKey = `${section.id}:${day}:${slot + i}`;
+                if (sectionSlots.has(sectionKey)) {
+                  sectionFree = false;
+                  break;
+                }
+              }
+              if (!sectionFree) continue;
+
+              for (const st of fallbackStaff) {
+                if (placedSomething) break;
+                for (const room of fallbackRooms) {
+                  let available = true;
+                  for (let i = 0; i < blockSize; i++) {
+                    const ts = slot + i;
+                    const staffKey = `${st.id}:${day}:${ts}`;
+                    const roomKey = `${room.id}:${day}:${ts}`;
+                    if (staffSlots.has(staffKey) || roomSlots.has(roomKey)) {
+                      available = false;
+                      break;
+                    }
+                  }
+                  if (!available) continue;
+
+                  for (let i = 0; i < blockSize; i++) {
+                    const ts = slot + i;
+                    const newEntry: TimetableEntry = {
+                      section_id: section.id,
+                      subject_id: subject.id,
+                      staff_id: st.id,
+                      room_id: room.id,
+                      day_of_week: day,
+                      time_slot: ts,
+                      semester: selectedSemester
+                    };
+                    result.push(newEntry);
+                    staffSlots.add(`${st.id}:${day}:${ts}`);
+                    roomSlots.add(`${room.id}:${day}:${ts}`);
+                    sectionSlots.add(`${section.id}:${day}:${ts}`);
+                  }
+                  if (isLab) {
+                    const dayKey = `${section.id}:${day}`;
+                    sectionDayLabSubject.set(dayKey, subject.id);
+                    const subjectDayKey = `${section.id}:${day}:${subject.id}`;
+                    sectionDaySubjectLabCount.set(subjectDayKey, (sectionDaySubjectLabCount.get(subjectDayKey) || 0) + blockSize);
+                  }
+                  scheduled += blockSize;
+                  placedSomething = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+
+        if (scheduled < targetHours) {
+          console.warn(`Coverage shortfall: section=${section.name}, subject=${subject.name}, scheduled=${scheduled}, target=${targetHours}`);
+        }
+      }
+    }
+
+    return result;
+  }
+
   // Post-processing: guarantee minimum 3 classes per day for each section (days 1-6)
   private enforceMinimumDailyClasses(
     entries: TimetableEntry[],
@@ -870,7 +1123,7 @@ If a slot is already occupied, update it with the new assignment for that sectio
   ): TimetableEntry[] {
     const MIN_PER_DAY = 3;
     const days = [1,2,3,4,5,6];
-    const timeSlots = [1,2,3,4,5,6,7];
+    const timeSlots = [1,2,3,4,5];
     const result: TimetableEntry[] = [...entries];
 
     const staffSlots = new Set(result.map(e => `${e.staff_id}:${e.day_of_week}:${e.time_slot}`));
@@ -1489,6 +1742,8 @@ export class SimpleTimetableGenerator {
     const entries: TimetableEntry[] = [];
     const timeSlots = 7; // 7 periods per day
     const days = 5; // Monday to Friday only
+    const selectedLabSubjectIds = new Set(options?.labSubjectIds || []);
+    const enforceContinuousLabPeriods = options?.enforceContinuousLabPeriods !== false;
     
     // Track occupied slots to avoid conflicts
     const occupiedSlots = {
@@ -1541,12 +1796,16 @@ export class SimpleTimetableGenerator {
 
       // Track subject distribution per day for this section
       const subjectDays = new Map<string, Set<number>>();
+      const sectionLabDaySubject = new Map<number, string>();
+      const sectionLabSubjectDayCount = new Map<string, number>();
       
       // Schedule subjects for this section
       sectionSubjects.forEach((subject) => {
         const hoursPerWeek = Number(subject.hours_per_week) || 3;
-        const isLab = subject.subject_type?.toLowerCase().includes('lab') || subject.subject_type?.toLowerCase().includes('practical');
-        const blockSize = isLab ? 2 : 1;
+        const isLabByType = subject.subject_type?.toLowerCase().includes('lab') || subject.subject_type?.toLowerCase().includes('practical');
+        const isLab = isLabByType || selectedLabSubjectIds.has(subject.id);
+        const blockSize = isLab && enforceContinuousLabPeriods ? 2 : 1;
+        const targetHours = blockSize === 2 ? Math.ceil(hoursPerWeek / 2) * 2 : hoursPerWeek;
 
         console.log(`Scheduling subject: ${subject.name} (${hoursPerWeek} hours/week, Block: ${blockSize})`);
         if (!subjectDays.has(subject.id)) subjectDays.set(subject.id, new Set());
@@ -1595,7 +1854,7 @@ export class SimpleTimetableGenerator {
         let attempts = 0;
         const maxAttempts = 500; // Increased to ensure mandatory hours are met
 
-        while (scheduledHours < hoursPerWeek && attempts < maxAttempts) {
+        while (scheduledHours < targetHours && attempts < maxAttempts) {
             attempts++;
             
             // Strategy: Try to find a day we haven't used yet for this subject
@@ -1634,6 +1893,11 @@ export class SimpleTimetableGenerator {
             for (const {day, slot} of possibleSlots) {
                 // For labs, enforce consecutive slots (1-2, 3-4, 5-6, 7-8)
                 if (isLab) {
+                const existingLabSubject = sectionLabDaySubject.get(day);
+                if (existingLabSubject && existingLabSubject !== subject.id) continue;
+                const subjectDayKey = `${day}:${subject.id}`;
+                const alreadyPlaced = sectionLabSubjectDayCount.get(subjectDayKey) || 0;
+                if (alreadyPlaced >= blockSize) continue;
                     if (slot % 2 === 0) continue; // Must start on odd slot
                     if (slot + 1 > timeSlots) continue; // Must fit in day
                 }
@@ -1688,13 +1952,18 @@ export class SimpleTimetableGenerator {
                 }
                 
                 subjectDays.get(subject.id)?.add(bestDay);
+                if (isLab) {
+                  sectionLabDaySubject.set(bestDay, subject.id);
+                  const subjectDayKey = `${bestDay}:${subject.id}`;
+                  sectionLabSubjectDayCount.set(subjectDayKey, (sectionLabSubjectDayCount.get(subjectDayKey) || 0) + blockSize);
+                }
                 scheduledHours += blockSize;
                 console.log(`Scheduled: ${subject.name} - Day ${bestDay}, Slot ${bestSlot}-${bestSlot+blockSize-1} - Staff: ${bestStaff.name}, Room: ${bestRoom.room_number}`);
             }
         }
         
-        if (scheduledHours < hoursPerWeek) {
-          console.warn(`Only scheduled ${scheduledHours}/${hoursPerWeek} hours for ${subject.name} in section ${section.name}`);
+        if (scheduledHours < targetHours) {
+          console.warn(`Only scheduled ${scheduledHours}/${targetHours} hours for ${subject.name} in section ${section.name}`);
         }
       });
 

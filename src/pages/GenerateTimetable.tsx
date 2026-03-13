@@ -81,6 +81,8 @@ export default function GenerateTimetable() {
   const [allRooms, setAllRooms] = useState<Room[]>([]);
   const [selectedSections, setSelectedSections] = useState<string[]>([]);
   const [selectedSubjects, setSelectedSubjects] = useState<string[]>([]);
+  const [selectedLabSubjectIds, setSelectedLabSubjectIds] = useState<string[]>([]);
+  const [enforceContinuousLabPeriods, setEnforceContinuousLabPeriods] = useState(true);
   const [selectedStaffIds, setSelectedStaffIds] = useState<string[]>([]);
   const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
   const [availableTimings, setAvailableTimings] = useState<{ id: string; day_of_week: number; start_time: string; end_time: string }[]>([]);
@@ -158,15 +160,13 @@ export default function GenerateTimetable() {
     throw new Error('Exponential backoff exhausted');
   };
   const handleGenerate = async () => {
-    if (selectedDepartments.length === 0) {
-      if (!advancedMode || selectedSubjects.length === 0) {
-        toast({
-          title: "Selection Required",
-          description: "Select at least one department or enable advanced mode with subjects.",
-          variant: "destructive"
-        });
-        return;
-      }
+    if (selectedDepartments.length === 0 && (!advancedMode || selectedSubjects.length === 0)) {
+      toast({
+        title: "Selection Required",
+        description: "Select at least one department or enable advanced mode with subjects.",
+        variant: "destructive"
+      });
+      return;
     }
 
     // Validate sections are selected
@@ -202,6 +202,8 @@ export default function GenerateTimetable() {
             advancedMode: true,
             sections: selectedSections.length ? selectedSections : undefined,
             subjects: selectedSubjects.length ? selectedSubjects : undefined,
+            labSubjectIds: selectedLabSubjectIds.length ? selectedLabSubjectIds : undefined,
+            enforceContinuousLabPeriods,
             staff: selectedStaffIds.length ? selectedStaffIds : undefined,
             rooms: selectedRoomIds.length ? selectedRoomIds : undefined
           } : undefined
@@ -256,6 +258,8 @@ export default function GenerateTimetable() {
         {
           rooms: selectedRoomIds.length ? selectedRoomIds : undefined,
           subjects: selectedSubjects.length ? selectedSubjects : undefined,
+          labSubjectIds: selectedLabSubjectIds.length ? selectedLabSubjectIds : undefined,
+          enforceContinuousLabPeriods,
           staff: selectedStaffIds.length ? selectedStaffIds : undefined,
           sections: selectedSections.length ? selectedSections : undefined,
           advancedMode: advancedMode
@@ -370,6 +374,16 @@ export default function GenerateTimetable() {
     r.room_number.toLowerCase().includes(roomSearch.toLowerCase()) ||
     (r.room_type || '').toLowerCase().includes(roomSearch.toLowerCase())
   );
+
+  const selectedSubjectDetails = useMemo(
+    () => allSubjects.filter(subject => selectedSubjects.includes(subject.id)),
+    [allSubjects, selectedSubjects]
+  );
+
+  useEffect(() => {
+    // Keep lab selection aligned with currently selected subjects.
+    setSelectedLabSubjectIds(prev => prev.filter(id => selectedSubjects.includes(id)));
+  }, [selectedSubjects]);
 
   const selectAll = (type: 'sections' | 'subjects' | 'staff' | 'rooms' | 'timings') => {
     switch(type){
@@ -599,6 +613,51 @@ export default function GenerateTimetable() {
                   {filteredSubjectsDisplay.length === 0 && (
                     <div className="col-span-full text-center text-sm text-muted-foreground py-2">
                       No subjects found
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Lab Subjects */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium">
+                    Lab Subjects ({selectedLabSubjectIds.length} selected)
+                  </h3>
+                </div>
+                <label className="flex items-center gap-2 text-xs font-normal">
+                  <Checkbox
+                    checked={enforceContinuousLabPeriods}
+                    onCheckedChange={(checked) => setEnforceContinuousLabPeriods(!!checked)}
+                  />
+                  <span>Schedule selected labs as one continuous 2-period block</span>
+                </label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                  {selectedSubjectDetails.map(subject => (
+                    <div key={`lab-${subject.id}`} className="flex items-center space-x-2">
+                      <Checkbox
+                        id={`lab-sub-${subject.id}`}
+                        checked={selectedLabSubjectIds.includes(subject.id)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setSelectedLabSubjectIds(prev => [...prev, subject.id]);
+                          } else {
+                            setSelectedLabSubjectIds(prev => prev.filter(id => id !== subject.id));
+                          }
+                        }}
+                      />
+                      <Label
+                        htmlFor={`lab-sub-${subject.id}`}
+                        className="text-xs cursor-pointer truncate"
+                        title={`${subject.name} (${subject.code})`}
+                      >
+                        {subject.name} <span className="text-muted-foreground">({subject.code})</span>
+                      </Label>
+                    </div>
+                  ))}
+                  {selectedSubjectDetails.length === 0 && (
+                    <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                      Select subjects first, then mark the ones that should be treated as labs.
                     </div>
                   )}
                 </div>
