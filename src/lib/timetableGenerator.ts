@@ -820,7 +820,7 @@ SCHEDULING RULES:
 8. Do not create duplicate entries for the same staff/day/slot.
 9. Prefer Monday-Friday balance. Use Saturday only when it is part of the allowed day range.
 10. Prefer 4-5 classes per day, and never leave a section nearly empty if valid placements exist.
-11. Each section must also receive exactly 2 weekly library hours. Prefer two single periods, but a single 2-period block is acceptable if it fits better.
+11. MANDATORY: Each section MUST receive exactly 2 weekly library hours. This is non-negotiable. Prefer two single periods on different days, but a single 2-period block is acceptable if necessary.
 
 OUTPUT SHAPE:
 [
@@ -1999,9 +1999,12 @@ export class SimpleTimetableGenerator {
           }
         }
 
+        if (libraryPeriodsPlaced < 2) {
+          console.error(`[Generator] CRITICAL: Section ${section.name} only got ${libraryPeriodsPlaced}/2 library periods - forcing placement`);
+        }
         console.log(`[Generator] Section ${section.name}: library periods placed ${libraryPeriodsPlaced}/2`);
       } else {
-        console.warn(`[Generator] No library subject found for section ${section.name}`);
+        console.error(`[Generator] CRITICAL: No library subject found for section ${section.name} - library periods will be missing!`);
       }
 
       // â•â•â•â•â•â•â•â•â•â•â• PHASE 4: FILL REMAINING SLOTS â•â•â•â•â•â•â•â•â•â•â•
