@@ -168,53 +168,51 @@ serve(async (req) => {
       }))
     };
 
-    const prompt = `You are an AI timetable generator for a university. Generate a comprehensive timetable in JSON format for semester ${selectedSemester}.
+    const prompt = `You are a production timetable planner for Mohan Babu University.
 
-CRITICAL REQUIREMENTS:
-1. ONLY assign staff to subjects they are authorized to teach (check staffSubjects mapping)
-2. NO staff conflicts: Same staff cannot be in two places at once
-3. NO room conflicts: Same room cannot host two classes simultaneously
-4. Lab subjects (subject_type: 'lab' or 'practical') MUST use lab-type rooms
-5. Theory subjects can use any classroom or lab
-6. Each subject must be scheduled for its required hours_per_week
-7. Distribute classes evenly across the week
-8. Respect college timings and avoid break/lunch periods
-9. Time slots: 1-8 representing different periods of the day
-10. Days: 1-6 (Monday=1 to Saturday=6)
+Return ONLY a raw JSON array. No markdown. No explanations.
 
-OPTIMIZATION GOALS:
-- Minimize gaps in student schedules
-- Balance faculty workload (respect max_hours_per_week)
-- Use room capacity efficiently
-- Spread lab sessions across different days
+STRICT RULES:
+1. Never violate staff, room, or section uniqueness for the same day_of_week + time_slot.
+2. Use only the provided section_id, subject_id, staff_id, and room_id values.
+3. Every subject must be scheduled for its required hours_per_week.
+4. Lab/practical subjects must use lab rooms only.
+5. Theory subjects should prefer classroom rooms.
+6. Every lab subject must appear exactly once per week as one 2-period continuous block.
+7. A section can have at most one lab block on a day.
+8. Spread labs across different days where possible.
+9. Only assign staff who are authorized through staffSubjects when a mapping exists.
+10. Use valid day_of_week values 1-6 and valid time_slot values 1-7.
+11. Each section must also receive exactly 2 weekly library hours. Prefer two single periods, but one 2-period block is acceptable if it fits better.
+
+LAB EXAMPLE:
+If a lab is on Monday periods 4 and 5, return TWO entries with the same section_id, subject_id, staff_id, room_id, and day_of_week, but with time_slot 4 and 5.
 
 DATA PROVIDED:
 ${JSON.stringify(promptData, null, 2)}
 
-RESPONSE FORMAT:
-Return ONLY a valid JSON array with no additional text or explanation:
+OUTPUT SHAPE:
 [
   {
     "section_id": "uuid-here",
-    "subject_id": "uuid-here", 
+    "subject_id": "uuid-here",
     "staff_id": "uuid-here",
     "room_id": "uuid-here",
     "day_of_week": 1,
     "time_slot": 1,
     "semester": ${selectedSemester}
   }
-]
+]`;
 
-Generate entries for ALL sections and subjects. Each subject should appear multiple times per week based on its hours_per_week value.`;
-
-    console.log('Calling Gemini 1.5 Pro...');
+    console.log('Calling Gemini 2.5 Flash...');
     
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${googleApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-goog-api-key': googleApiKey
         },
         body: JSON.stringify({
           contents: [{
@@ -312,10 +310,10 @@ Generate entries for ALL sections and subjects. Each subject should appear multi
     return new Response(
       JSON.stringify({ 
         success: true, 
-        message: 'Timetable generated successfully using Gemini 1.5 Pro with enhanced AI optimization',
+        message: 'Timetable generated successfully using Gemini 2.5 Flash with enhanced AI optimization',
         entriesCount: validatedEntries.length,
         totalGenerated: timetableEntries.length,
-        model: 'gemini-1.5-pro',
+        model: 'gemini-2.5-flash',
         sectionsProcessed: sections.length,
         subjectsProcessed: subjects.length
       }),

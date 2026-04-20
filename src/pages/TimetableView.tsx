@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+﻿import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -16,16 +16,29 @@ import { supabase } from "@/integrations/supabase/client";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { TimetableTemplate } from "@/components/TimetableTemplate";
 import { TimetableEditor } from "@/components/TimetableEditor";
+import {
+  buildTemplateDataFromEntries,
+  isLabSubjectLike,
+  isLibrarySubjectLike,
+  sanitizeTimetableFilename,
+  waitForImages,
+} from "@/lib/newmethod";
 
-const timeSlots = [
-  "09:00-10:00",
-  "10:15-11:15", 
-  "11:15-12:15",
-  "13:15-14:00",
-  "14:00-14:45",
-  "15:00-16:00",
-  "16:00-17:00"
+// Default time slot labels (up to 10 periods supported)
+// The grid dynamically shows only as many as the data contains
+const ALL_TIME_SLOT_LABELS = [
+  "09:00-10:00",   // Period 1
+  "10:15-11:15",   // Period 2
+  "11:15-12:15",   // Period 3
+  "01:15-02:00",   // Period 4
+  "02:00-02:45",   // Period 5
+  "03:00-04:00",   // Period 6
+  "04:00-05:00",   // Period 7
+  "05:00-05:45",   // Period 8
+  "05:45-06:30",   // Period 9
+  "06:30-07:15",   // Period 10
 ];
+const timeSlots = ALL_TIME_SLOT_LABELS.slice(0, 7); // default view: 7 periods
 
 // Monday to Friday only (as requested)
 const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
@@ -41,6 +54,17 @@ const subjectColors: Record<string, string> = {
   "Sports": "bg-gradient-to-br from-blue-100 to-blue-200 text-blue-800 border-blue-300",
   "default": "bg-gradient-to-br from-blue-100 to-blue-200 text-blue-800 border-blue-300"
 };
+
+const sameScheduledCell = (
+  left?: { subject?: string; code?: string; staff?: string; room?: string } | null,
+  right?: { subject?: string; code?: string; staff?: string; room?: string } | null,
+) =>
+  !!left &&
+  !!right &&
+  left.subject === right.subject &&
+  left.code === right.code &&
+  left.staff === right.staff &&
+  left.room === right.room;
 
 interface TimetableEntry {
   id: string;
@@ -98,6 +122,8 @@ export default function TimetableView() {
   const [exporting, setExporting] = useState(false);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [selectedExportKeys, setSelectedExportKeys] = useState<string[]>([]); // deptId|sectionName|semester
+  const [printDialogOpen, setPrintDialogOpen] = useState(false);
+  const [printingKey, setPrintingKey] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [regenerating, setRegenerating] = useState(false);
   const [personalizedTimetables, setPersonalizedTimetables] = useState<PersonalizedTimetable[]>([]);
@@ -532,7 +558,24 @@ export default function TimetableView() {
   };
 
   const handlePrint = () => {
-    window.print();
+    // If a single section timetable is already loaded, print directly; else open selection dialog
+    if (viewMode === 'single' && selectedSection && selectedSemester && timetableData.length > 0) {
+      window.print();
+    } else {
+      setPrintDialogOpen(true);
+    }
+  };
+
+  const handlePrintSelected = async () => {
+    if (!printingKey) return;
+    const [sectionId, semStr] = printingKey.split('|');
+    // Load the timetable for the chosen section+semester
+    setSelectedSection(sectionId);
+    setSelectedSemester(semStr);
+    setViewMode('single');
+    setPrintDialogOpen(false);
+    // Wait for state + data to load then print
+    setTimeout(() => window.print(), 1200);
   };
 
   const getTimetableKey = (sectionId: string, semester: number) => `${sectionId}|${semester}`;
@@ -631,8 +674,12 @@ export default function TimetableView() {
       setExporting(true);
       
       if (useUniversityTemplate) {
-        // Use university template for export
-        await exportWithUniversityTemplate(entries, title);
+        await exportWithUniversityTemplate(entries, title, {
+          departmentName: getDepartmentNameFromEntries(entries),
+          sectionName: getSectionNameFromTitle(title),
+          semester: entries[0]?.semester,
+          fileName: `${sanitizeTimetableFilename(title)}.pdf`,
+        });
       } else {
         // Use old simple grid export
         injectPdfStyles();
@@ -674,140 +721,151 @@ export default function TimetableView() {
       console.error('PDF export error', err);
       toast({ title: 'Export failed', description: 'Could not generate PDF', variant: 'destructive' });
     } finally {
+      removePdfStyles();
       setExporting(false);
     }
   };
 
-  const exportWithUniversityTemplate = async (entries: TimetableEntry[], title: string) => {
-    // Convert entries to schedule format
-    const schedule: any = {};
-    const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-    const timeSlotMap: { [key: number]: string } = {
-      1: "slot1",
-      2: "slot2",
-      3: "slot3",
-      4: "slot4",
-      5: "slot5",
-      6: "slot6",
-      7: "slot7"
-    };
+  const buildScheduleFromEntries = (entries: TimetableEntry[]) => buildTemplateDataFromEntries(entries);
 
-    days.forEach(day => {
-      schedule[day] = {};
-    });
+  const getDepartmentNameFromEntries = (entries: TimetableEntry[]) => {
+    const departmentId = entries[0]?.sections?.department_id;
+    return departments.find((department) => department.id === departmentId)?.name || selectedDeptName || "Data Science";
+  };
 
-    // Track all rooms used and find most common one
-    const roomCounts = new Map<string, number>();
-    
-    entries.forEach(entry => {
-      const dayName = days[entry.day_of_week - 1];
-      const timeSlot = timeSlotMap[entry.time_slot];
-      if (dayName && timeSlot) {
-        schedule[dayName][timeSlot] = {
-          subject: entry.subjects.name,
-          code: entry.subjects.code,
-          staff: entry.staff.name,
-          room: entry.rooms.room_number,
-          type: entry.subjects.name.toLowerCase().includes('lab') ? 'LAB' : 'Theory'
-        };
-        
-        // Count room usage
-        const room = entry.rooms.room_number;
-        roomCounts.set(room, (roomCounts.get(room) || 0) + 1);
-      }
-    });
+  const getSectionNameFromTitle = (title: string) => {
+    const cleaned = title
+      .replace(/\s*Timetable.*$/i, "")
+      .replace(/\s*-\s*Semester.*$/i, "")
+      .trim();
+    const parts = cleaned.split(/\s+-\s+/).map((part) => part.trim()).filter(Boolean);
+    return parts[parts.length - 1] || cleaned || "Section";
+  };
 
-    // Get the most frequently used room, or "Multiple" if mixed
-    let primaryRoom = "Multiple";
-    if (roomCounts.size === 1) {
-      primaryRoom = Array.from(roomCounts.keys())[0];
-    } else if (roomCounts.size > 0) {
-      // Find most common room
-      let maxCount = 0;
-      roomCounts.forEach((count, room) => {
-        if (count > maxCount) {
-          maxCount = count;
-          primaryRoom = room;
-        }
-      });
-    }
+  const renderUniversityTemplateCanvas = async (
+    entries: TimetableEntry[],
+    metadata?: {
+      departmentName?: string;
+      sectionName?: string;
+      semester?: number;
+      effectiveDate?: string;
+    },
+  ) => {
+    const { schedule, primaryRoom, subjects } = buildScheduleFromEntries(entries);
+    const departmentName = metadata?.departmentName || getDepartmentNameFromEntries(entries);
+    const sectionName = metadata?.sectionName || getSectionNameFromTitle("");
+    const semesterValue = metadata?.semester || entries[0]?.semester || parseInt(selectedSemester || "1", 10);
 
-    // Extract unique subjects for legend
-    const subjectMap = new Map();
-    entries.forEach(entry => {
-      if (!subjectMap.has(entry.subjects.code)) {
-        subjectMap.set(entry.subjects.code, {
-          code: entry.subjects.code,
-          name: entry.subjects.name,
-          faculty: entry.staff.name
-        });
-      }
-    });
-    const subjects = Array.from(subjectMap.values());
-
-    // Parse title for department and section info
-    const titleParts = title.split('-');
-    const sectionInfo = titleParts[0]?.trim() || 'Section';
-    const semesterInfo = titleParts[1]?.trim() || 'Semester';
-
-    // Get current academic year and format date
     const today = new Date();
-    const currentYear = today.getFullYear();
-    const nextYear = currentYear + 1;
-    const formattedDate = today.toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
+    const year = today.getFullYear();
+    const formattedDate = metadata?.effectiveDate || today.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
     });
 
-    // Create a temporary container for the template
-    const tempDiv = document.createElement('div');
-    tempDiv.style.position = 'absolute';
-    tempDiv.style.left = '-9999px';
-    tempDiv.style.width = '210mm';
+    const tempDiv = document.createElement("div");
+    tempDiv.style.cssText = "position:absolute;left:-9999px;top:0;width:794px;background:#ffffff;";
     document.body.appendChild(tempDiv);
 
-    // Render the template using React
-    const { createRoot } = await import('react-dom/client');
+    const { createRoot } = await import("react-dom/client");
     const root = createRoot(tempDiv);
-    
-    await new Promise<void>((resolve) => {
-      root.render(
-        <TimetableTemplate
-          title="SCHOOL OF COMPUTING"
-          subtitle={selectedDeptName || "DEPARTMENT"}
-          department={selectedDeptName || ""}
-          semester={`${semesterInfo} (${currentYear}-${nextYear.toString().slice(-2)})`}
-          section={sectionInfo}
-          roomNo={primaryRoom}
-          effectiveDate={formattedDate}
-          schedule={schedule}
-          subjects={subjects}
-          pageNumber={1}
-        />
-      );
-      setTimeout(resolve, 500); // Wait for rendering
+
+    try {
+      await new Promise<void>((resolve) => {
+        root.render(
+          <TimetableTemplate
+            title="SCHOOL OF COMPUTING"
+            subtitle={`DEPARTMENT OF ${departmentName.toUpperCase()}`}
+            department={departmentName}
+            semester={`Semester ${semesterValue} (${year}-${(year + 1).toString().slice(-2)})`}
+            section={sectionName}
+            roomNo={primaryRoom}
+            effectiveDate={formattedDate}
+            schedule={schedule}
+            subjects={subjects}
+            pageNumber={1}
+          />,
+        );
+        window.setTimeout(resolve, 400);
+      });
+
+      await waitForImages(tempDiv);
+      const templateEl = tempDiv.firstElementChild as HTMLElement || tempDiv;
+      return await html2canvas(templateEl, {
+        scale: 2,
+        backgroundColor: "#ffffff",
+        useCORS: true,
+        logging: false,
+      });
+    } finally {
+      root.unmount();
+      document.body.removeChild(tempDiv);
+    }
+  };
+
+  const exportWithUniversityTemplate = async (
+    entries: TimetableEntry[],
+    title: string,
+    metadata?: {
+      departmentName?: string;
+      sectionName?: string;
+      semester?: number;
+      fileName?: string;
+    },
+  ) => {
+    const canvas = await renderUniversityTemplateCanvas(entries, {
+      departmentName: metadata?.departmentName || getDepartmentNameFromEntries(entries),
+      sectionName: metadata?.sectionName || getSectionNameFromTitle(title),
+      semester: metadata?.semester || entries[0]?.semester,
     });
+    const pdf = new jsPDF("portrait", "mm", "a4");
+    const imgData = canvas.toDataURL("image/png");
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const ratio = Math.min(pageWidth / (canvas.width / 2 * 0.264583), pageHeight / (canvas.height / 2 * 0.264583));
+    const imageWidth = (canvas.width / 2 * 0.264583) * ratio;
+    const imageHeight = (canvas.height / 2 * 0.264583) * ratio;
 
-    // Capture and convert to PDF
-    const templateElement = tempDiv.querySelector('#timetable-pdf-template') as HTMLElement || tempDiv;
-    const canvas = await html2canvas(templateElement, {
-      scale: 2,
-      backgroundColor: '#ffffff',
-      useCORS: true,
-      logging: false,
-      width: 794, // A4 width in pixels at 96 DPI
-      height: 1123 // A4 height in pixels at 96 DPI
-    });
+    pdf.addImage(imgData, "PNG", (pageWidth - imageWidth) / 2, 0, imageWidth, imageHeight);
+    pdf.save(metadata?.fileName || `${sanitizeTimetableFilename(title)}-MBU-format.pdf`);
+  };
 
-    const pdf = new jsPDF('portrait', 'mm', 'a4');
-    const imgData = canvas.toDataURL('image/png');
-    pdf.addImage(imgData, 'PNG', 0, 0, 210, 297);
-    pdf.save(`${title.replace(/\s+/g, '_')}-university-format.pdf`);
+  const exportUniversityTemplateBatch = async (
+    items: Array<{
+      title: string;
+      entries: TimetableEntry[];
+      departmentName?: string;
+      sectionName?: string;
+      semester?: number;
+    }>,
+    fileName: string,
+  ) => {
+    const pdf = new jsPDF("portrait", "mm", "a4");
+    let firstPage = true;
 
-    // Cleanup
-    root.unmount();
-    document.body.removeChild(tempDiv);
+    for (const item of items) {
+      const canvas = await renderUniversityTemplateCanvas(item.entries, {
+        departmentName: item.departmentName,
+        sectionName: item.sectionName || getSectionNameFromTitle(item.title),
+        semester: item.semester,
+      });
+      const imageData = canvas.toDataURL("image/png");
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const ratio = Math.min(pageWidth / (canvas.width / 2 * 0.264583), pageHeight / (canvas.height / 2 * 0.264583));
+      const imageWidth = (canvas.width / 2 * 0.264583) * ratio;
+      const imageHeight = (canvas.height / 2 * 0.264583) * ratio;
+
+      if (!firstPage) {
+        pdf.addPage();
+      }
+
+      pdf.addImage(imageData, "PNG", (pageWidth - imageWidth) / 2, 0, imageWidth, imageHeight);
+      firstPage = false;
+    }
+
+    pdf.save(fileName);
   };
 
   const handleDownloadStudentTimetable = async (timetable: PersonalizedTimetable) => {
@@ -899,12 +957,14 @@ export default function TimetableView() {
           const freePeriodText = getDefaultFreePeriod(timetableJson.semester || parseInt(selectedSemester), dayIndex, timeSlotIndex);
           html += `<div style="padding: 12px; border: 2px dashed #e2e8f0; border-radius: 8px; text-align: center; color: #94a3b8; font-size: 12px;">${freePeriodText}</div>`;
         } else {
+          const isLibrary = (slot.subject || '').toLowerCase().includes('library');
           html += `
-            <div style="padding: 8px; border: 1px solid #bfdbfe; border-radius: 8px; background: linear-gradient(to bottom right, #dbeafe, #bfdbfe);">
-              <div style="background: #bfdbfe; color: #1e40af; padding: 2px 6px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 4px; border: 1px solid #93c5fd;">${slot.code || slot.subject.substring(0, 3)}</div>
+            <div style="padding: 8px; border: 1px solid ${isLibrary ? '#86efac' : '#bfdbfe'}; border-radius: 8px; background: linear-gradient(to bottom right, ${isLibrary ? '#dcfce7' : '#dbeafe'}, ${isLibrary ? '#bbf7d0' : '#bfdbfe'});">
+              <div style="background: ${isLibrary ? '#22c55e' : '#bfdbfe'}; color: ${isLibrary ? '#ffffff' : '#1e40af'}; padding: 2px 6px; border-radius: 4px; font-size: 10px; display: inline-block; margin-bottom: 4px; border: 1px solid ${isLibrary ? '#16a34a' : '#93c5fd'};">${slot.code || slot.subject.substring(0, 3)}</div>
               <p style="font-size: 12px; font-weight: 500; word-break: break-word; line-height: 1.2; margin: 0;">${slot.subject}</p>
               <p style="font-size: 10px; color: #64748b; word-break: break-word; line-height: 1.2; margin: 0;">${slot.staff || 'TBD'}</p>
               <p style="font-size: 10px; color: #64748b; word-break: break-word; line-height: 1.2; margin: 0;">Room: ${slot.room || 'TBD'}</p>
+              ${isLibrary ? '<div style="margin-top: 4px; font-size: 9px; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.5px;">Library</div>' : ''}
             </div>
           `;
         }
@@ -917,6 +977,37 @@ export default function TimetableView() {
   const renderTimetableGrid = (entries: TimetableEntry[], title: string, exportKey?: string, showDownloadButton?: boolean, isSelected?: boolean, onSelect?: () => void) => {
     // Determine semester from entries or fallback to selectedSemester
     const gridSemester = entries.length > 0 ? entries[0].semester : (parseInt(selectedSemester) || 1);
+    const maxSlot = entries.reduce((max, entry) => Math.max(max, entry.time_slot), 0);
+    const activeSlots = ALL_TIME_SLOT_LABELS.slice(0, Math.max(maxSlot, 5));
+
+    const labStartKeys = new Set<string>();
+    const labSkipKeys = new Set<string>();
+    const getEntry = (day: number, slot: number) => entries.find((entry) => entry.day_of_week === day && entry.time_slot === slot);
+
+    entries.forEach((entry) => {
+      const nextEntry = getEntry(entry.day_of_week, entry.time_slot + 1);
+      const isLabBlockStart =
+        nextEntry &&
+        sameScheduledCell(
+          {
+            subject: entry.subjects?.name,
+            code: entry.subjects?.code,
+            staff: entry.staff?.name,
+            room: entry.rooms?.room_number,
+          },
+          {
+            subject: nextEntry.subjects?.name,
+            code: nextEntry.subjects?.code,
+            staff: nextEntry.staff?.name,
+            room: nextEntry.rooms?.room_number,
+          },
+        );
+
+      if (isLabBlockStart) {
+        labStartKeys.add(`${entry.day_of_week}:${entry.time_slot}`);
+        labSkipKeys.add(`${entry.day_of_week}:${entry.time_slot + 1}`);
+      }
+    });
 
     return (
     <Card className={`mb-6 timetable-grid-export transition-all ${isSelected ? 'ring-2 ring-primary shadow-lg' : ''}`} data-export-key={exportKey || ''}>
@@ -949,79 +1040,129 @@ export default function TimetableView() {
               className="gap-2"
             >
               <Download className="w-4 h-4" />
-              {exporting ? 'Downloading...' : 'Download'}
+              {exporting ? 'Downloading...' : 'Download Template'}
             </Button>
           )}
         </div>
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto">
-          <div className={`grid grid-cols-6 gap-1 md:gap-2 min-w-full ${isMobile ? 'text-xs' : ''}`}>
-            {/* Header */}
-            <div className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
-              Time
-            </div>
-            {days.map(day => (
-              <div key={day} className="font-semibold p-2 md:p-3 bg-muted rounded-lg text-center text-xs md:text-sm">
-                {isMobile ? day.substring(0, 3) : day}
-              </div>
-            ))}
+          <table className={`w-full border-collapse min-w-full ${isMobile ? 'text-xs' : ''}`}>
+            <thead>
+              <tr>
+                <th className="border border-slate-400 bg-slate-200 px-2 py-2 text-center font-semibold w-20">Time</th>
+                {days.map(day => (
+                  <th key={day} className="border border-slate-400 bg-slate-200 px-2 py-2 text-center font-semibold">
+                    {isMobile ? day.substring(0, 3) : day}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {activeSlots.map((timeSlot, index) => (
+                <tr key={timeSlot}>
+                  <td className="border border-slate-400 bg-slate-100 px-2 py-2 text-center font-medium align-middle">
+                    {isMobile ? timeSlot.split('-')[0] : timeSlot}
+                  </td>
+                  {days.map((day, dayIndex) => {
+                    const slotNumber = index + 1;
+                    const entry = getEntry(dayIndex + 1, slotNumber);
+                    const isLab = !!entry && (
+                      isLabSubjectLike(entry.subjects) ||
+                      labStartKeys.has(`${dayIndex + 1}:${slotNumber}`) ||
+                      labSkipKeys.has(`${dayIndex + 1}:${slotNumber}`)
+                    );
+                    const isLibrary = !!entry && isLibrarySubjectLike(entry.subjects);
+                    const isLabStart = isLab && labStartKeys.has(`${dayIndex + 1}:${slotNumber}`);
+                    const isLabContinuation = labSkipKeys.has(`${dayIndex + 1}:${slotNumber}`);
 
-            {/* Time slots and schedule */}
-            {timeSlots.map((timeSlot, index) => (
-              <div key={timeSlot} className="contents">
-                <div className="p-2 md:p-3 bg-muted/50 rounded-lg text-center font-medium text-xs">
-                  {isMobile ? timeSlot.split('-')[0] : timeSlot}
-                </div>
-                {days.map((day, dayIndex) => {
-                  const entry = getTimetableEntry(entries, dayIndex + 1, index + 1);
-                  
-                  if (!entry) {
-                    const freePeriodText = getDefaultFreePeriod(gridSemester, dayIndex, index);
+                    if (isLabContinuation) {
+                      return null;
+                    }
+
+                    if (!entry) {
+                      const freePeriodText = getDefaultFreePeriod(gridSemester, dayIndex, index);
+                      return (
+                        <td
+                          key={`${day}-${timeSlot}`}
+                          className="border border-dashed border-slate-300 bg-white px-2 py-3 text-center text-muted-foreground align-middle relative group"
+                        >
+                          {isMobile ? (freePeriodText === 'Library Period' ? 'Library' : 'Intern') : freePeriodText}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
+                            onClick={() => handleEditClick(dayIndex + 1, slotNumber, null)}
+                          >
+                            <Edit3 className="w-3 h-3" />
+                          </Button>
+                        </td>
+                      );
+                    }
+
+                    const cellClass = isLab
+                      ? "border border-amber-400 bg-gradient-to-br from-amber-100 to-yellow-200 px-2 py-2 text-center align-middle relative group shadow-inner"
+                      : isLibrary
+                        ? "border border-emerald-400 bg-gradient-to-br from-emerald-100 to-green-200 px-2 py-2 text-center align-middle relative group shadow-inner"
+                        : "border border-slate-300 bg-gradient-to-br from-blue-50 to-blue-100 px-2 py-2 text-center align-middle relative group";
+
                     return (
-                      <div key={`${day}-${timeSlot}`} className="p-1 md:p-3 border border-dashed border-muted rounded-lg text-center text-muted-foreground text-xs relative group">
-                        {isMobile ? (freePeriodText === 'Library Period' ? 'Library' : 'Intern') : freePeriodText}
+                      <td
+                        key={`${day}-${timeSlot}`}
+                        rowSpan={isLabStart ? 2 : 1}
+                        className={cellClass}
+                        style={isLabStart ? { minHeight: '92px' } : undefined}
+                      >
+                        <div className="flex flex-col items-center justify-center gap-1">
+                          <Badge
+                          className={`text-[10px] shadow-sm ${isLab ? 'bg-amber-500 text-white hover:bg-amber-500' : isLibrary ? 'bg-emerald-500 text-white hover:bg-emerald-500' : subjectColors[entry.subjects.name] || subjectColors.default}`}
+                        >
+                          {entry.subjects.code}
+                        </Badge>
+                          <p className="text-[10px] md:text-xs font-medium break-words w-full leading-tight">
+                            {entry.subjects.name}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">
+                            {entry.staff.name}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">
+                            Room: {entry.rooms.room_number}
+                          </p>
+                          {isLab && (
+                            <span className="mt-1 inline-flex items-center rounded-full border border-amber-400 bg-amber-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700">
+                              Lab
+                            </span>
+                          )}
+                          {isLibrary && (
+                            <span className="mt-1 inline-flex items-center rounded-full border border-emerald-400 bg-emerald-50 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-700">
+                              Library
+                            </span>
+                          )}
+                        </div>
                         <Button
                           variant="ghost"
                           size="sm"
                           className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
-                          onClick={() => handleEditClick(dayIndex + 1, index + 1, null)}
+                          onClick={() => handleEditClick(
+                            dayIndex + 1,
+                            slotNumber,
+                            {
+                              subject: entry.subjects.name,
+                              code: entry.subjects.code,
+                              staff: entry.staff.name,
+                              room: entry.rooms.room_number
+                            }
+                          )}
                         >
                           <Edit3 className="w-3 h-3" />
                         </Button>
-                      </div>
+                      </td>
                     );
-                  }
-
-                  return (
-                    <div key={`${day}-${timeSlot}`} className="p-1 md:p-2 border rounded-lg hover:shadow-md transition-all duration-200 cursor-pointer pdf-cell bg-gradient-to-br from-blue-50 to-blue-100 relative group">
-                      <Badge className={`${subjectColors[entry.subjects.name] || subjectColors.default} mb-1 text-[10px] pdf-badge shadow-sm`}>{entry.subjects.code}</Badge>
-                      <p className="text-[10px] md:text-xs font-medium break-words w-full leading-tight">{entry.subjects.name}</p>
-                      <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">{entry.staff.name}</p>
-                      <p className="text-[10px] text-muted-foreground break-words w-full leading-tight">Room: {entry.rooms.room_number}</p>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
-                        onClick={() => handleEditClick(
-                          dayIndex + 1, 
-                          index + 1, 
-                          {
-                            subject: entry.subjects.name,
-                            code: entry.subjects.code,
-                            staff: entry.staff.name,
-                            room: entry.rooms.room_number
-                          }
-                        )}
-                      >
-                        <Edit3 className="w-3 h-3" />
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </CardContent>
     </Card>
@@ -1034,194 +1175,85 @@ export default function TimetableView() {
   const handleDownloadAll = async () => {
     try {
       setExporting(true);
-      
+
       if (useUniversityTemplate) {
-        const pdf = new jsPDF('portrait', 'mm', 'a4');
-        let first = true;
-        const { createRoot } = await import('react-dom/client');
-        
-        // Show progress toast
-        const totalSections = Object.values(allTimetablesData).reduce((acc, dept) => acc + Object.keys(dept.sections).length, 0);
-        toast({ title: 'Exporting...', description: `Generating University Format PDF for ${totalSections} timetables. This may take a moment.` });
+        const exportItems = Object.entries(allTimetablesData).flatMap(([deptId, department]) =>
+          Object.values(department.sections)
+            .filter((section) => {
+              const exportKey = `${deptId}|${section.sectionName}|${section.semester}`;
+              return selectedExportKeys.length === 0 || selectedExportKeys.includes(exportKey);
+            })
+            .map((section) => ({
+              title: `${department.departmentName} - ${section.sectionName} - Semester ${section.semester}`,
+              entries: section.entries,
+              departmentName: department.departmentName,
+              sectionName: section.sectionName,
+              semester: section.semester,
+            })),
+        );
 
-        // Iterate through all departments and sections
-        for (const [deptId, dept] of Object.entries(allTimetablesData)) {
-          for (const [sectionId, section] of Object.entries(dept.sections)) {
-            // Check if this timetable is selected (if any selection exists)
-            const exportKey = `${deptId}|${section.sectionName}|${section.semester}`;
-            if (selectedExportKeys.length > 0 && !selectedExportKeys.includes(exportKey)) {
-              continue;
-            }
-
-            const entries = section.entries;
-            
-            // Prepare data for template (copied from exportWithUniversityTemplate)
-            const schedule: any = {};
-            const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-            const timeSlotMap: { [key: number]: string } = {
-              1: "slot1",
-              2: "slot2",
-              3: "slot3",
-              4: "slot4",
-              5: "slot5",
-              6: "slot6",
-              7: "slot7"
-            };
-
-            days.forEach(day => {
-              schedule[day] = {};
-            });
-
-            const roomCounts = new Map<string, number>();
-            
-            entries.forEach(entry => {
-              const dayName = days[entry.day_of_week - 1];
-              const timeSlot = timeSlotMap[entry.time_slot];
-              if (dayName && timeSlot) {
-                schedule[dayName][timeSlot] = {
-                  subject: entry.subjects.name,
-                  code: entry.subjects.code,
-                  staff: entry.staff.name,
-                  room: entry.rooms.room_number,
-                  type: entry.subjects.name.toLowerCase().includes('lab') ? 'LAB' : 'Theory'
-                };
-                const room = entry.rooms.room_number;
-                roomCounts.set(room, (roomCounts.get(room) || 0) + 1);
-              }
-            });
-
-            let primaryRoom = "Multiple";
-            if (roomCounts.size === 1) {
-              primaryRoom = Array.from(roomCounts.keys())[0];
-            } else if (roomCounts.size > 0) {
-              let maxCount = 0;
-              roomCounts.forEach((count, room) => {
-                if (count > maxCount) {
-                  maxCount = count;
-                  primaryRoom = room;
-                }
-              });
-            }
-
-            const subjectMap = new Map();
-            entries.forEach(entry => {
-              if (!subjectMap.has(entry.subjects.code)) {
-                subjectMap.set(entry.subjects.code, {
-                  code: entry.subjects.code,
-                  name: entry.subjects.name,
-                  faculty: entry.staff.name
-                });
-              }
-            });
-            const subjects = Array.from(subjectMap.values());
-
-            const today = new Date();
-            const currentYear = today.getFullYear();
-            const nextYear = currentYear + 1;
-            const formattedDate = today.toLocaleDateString('en-GB', {
-              day: '2-digit',
-              month: '2-digit',
-              year: 'numeric'
-            });
-
-            // Create temp container
-            const tempDiv = document.createElement('div');
-            tempDiv.style.position = 'absolute';
-            tempDiv.style.left = '-9999px';
-            tempDiv.style.width = '210mm';
-            document.body.appendChild(tempDiv);
-
-            const root = createRoot(tempDiv);
-            
-            await new Promise<void>((resolve) => {
-              root.render(
-                <TimetableTemplate
-                  title="SCHOOL OF COMPUTING"
-                  subtitle={dept.departmentName}
-                  department={dept.departmentName}
-                  semester={`Semester ${section.semester} (${currentYear}-${nextYear.toString().slice(-2)})`}
-                  section={section.sectionName}
-                  roomNo={primaryRoom}
-                  effectiveDate={formattedDate}
-                  schedule={schedule}
-                  subjects={subjects}
-                  pageNumber={1}
-                />
-              );
-              setTimeout(resolve, 500);
-            });
-
-            const templateElement = tempDiv.querySelector('#timetable-pdf-template') as HTMLElement || tempDiv;
-            const canvas = await html2canvas(templateElement, {
-              scale: 2,
-              backgroundColor: '#ffffff',
-              useCORS: true,
-              logging: false,
-              width: 794,
-              height: 1123
-            });
-
-            const imgData = canvas.toDataURL('image/png');
-            
-            if (!first) pdf.addPage();
-            pdf.addImage(imgData, 'PNG', 0, 0, 210, 297);
-            first = false;
-
-            root.unmount();
-            document.body.removeChild(tempDiv);
-          }
+        if (exportItems.length === 0) {
+          throw new Error("No timetables selected for download");
         }
-        
-        pdf.save(`all-timetables-university-format-${new Date().toISOString().split('T')[0]}.pdf`);
-        toast({ title: 'Exported', description: 'All timetables downloaded successfully in University Format' });
 
-      } else {
-        // Existing logic for simple grid export
-        injectPdfStyles();
-        
-        // all timetables: export all regardless of selection
-        const allGrids = Array.from(document.querySelectorAll('.timetable-grid-export')) as HTMLElement[];
-        
-        if (!allGrids.length) {
-          toast({ title: 'Nothing to export', description: 'No timetables loaded', variant: 'destructive' });
-          return;
-        }
-        
-        const pdf = new jsPDF('landscape', 'mm', 'a4');
-        let first = true;
-        
-        // Show progress toast
-        toast({ title: 'Exporting...', description: `Generating PDF for ${allGrids.length} timetables. This may take a moment.` });
+        toast({
+          title: "Preparing download",
+          description: `Creating ${exportItems.length} timetable PDF page${exportItems.length > 1 ? "s" : ""} in template format.`,
+        });
 
-        for (const grid of Array.from(allGrids)) {
-          const canvas = await html2canvas(grid as HTMLElement, { scale: 2, backgroundColor: '#ffffff', useCORS: true, allowTaint: true, logging: false });
-          const imgData = canvas.toDataURL('image/png');
-          
-          if (!first) pdf.addPage();
-          
-          const pageWidth = pdf.internal.pageSize.getWidth();
-          const pageHeight = pdf.internal.pageSize.getHeight();
-          const margin = 10;
-          const usableWidth = pageWidth - margin * 2;
-          const imgHeight = canvas.height * (usableWidth / canvas.width);
-          
-          let y = margin;
-          if (imgHeight < pageHeight - margin * 2) {
-            y = (pageHeight - imgHeight) / 2;
-          }
-          
-          pdf.addImage(imgData, 'PNG', margin, y, usableWidth, imgHeight);
-          first = false;
-        }
-        
-        pdf.save(`all-timetables-${new Date().toISOString().split('T')[0]}.pdf`);
-        toast({ title: 'Exported', description: 'All timetables downloaded successfully' });
-        removePdfStyles();
+        await exportUniversityTemplateBatch(
+          exportItems,
+          `all-timetables-university-format-${new Date().toISOString().split("T")[0]}.pdf`,
+        );
+        toast({ title: "Downloaded", description: "Template PDF downloaded successfully." });
+        return;
       }
+
+      injectPdfStyles();
+      const allGrids = Array.from(document.querySelectorAll(".timetable-grid-export")) as HTMLElement[];
+
+      if (!allGrids.length) {
+        throw new Error("No timetables loaded");
+      }
+
+      const pdf = new jsPDF("landscape", "mm", "a4");
+      let first = true;
+
+      for (const grid of allGrids) {
+        const canvas = await html2canvas(grid, {
+          scale: 2,
+          backgroundColor: "#ffffff",
+          useCORS: true,
+          allowTaint: true,
+          logging: false,
+        });
+        const imgData = canvas.toDataURL("image/png");
+        if (!first) {
+          pdf.addPage();
+        }
+
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10;
+        const usableWidth = pageWidth - margin * 2;
+        const imgHeight = canvas.height * (usableWidth / canvas.width);
+        const y = imgHeight < pageHeight - margin * 2 ? (pageHeight - imgHeight) / 2 : margin;
+
+        pdf.addImage(imgData, "PNG", margin, y, usableWidth, imgHeight);
+        first = false;
+      }
+
+      pdf.save(`all-timetables-${new Date().toISOString().split("T")[0]}.pdf`);
+      toast({ title: "Downloaded", description: "PDF downloaded successfully." });
     } catch (err) {
-      console.error('PDF export error', err);
-      toast({ title: 'Export failed', description: 'Could not generate PDF', variant: 'destructive' });
+      console.error("PDF export error", err);
+      toast({
+        title: "Export failed",
+        description: (err as Error).message || "Could not generate PDF",
+        variant: "destructive",
+      });
     } finally {
+      removePdfStyles();
       setExporting(false);
     }
   };
@@ -1229,76 +1261,138 @@ export default function TimetableView() {
   const handleExportPDF = async () => {
     try {
       setExporting(true);
+
+      if (useUniversityTemplate) {
+        if (viewMode === "single") {
+          if (!timetableData.length) {
+            throw new Error("Load a timetable first");
+          }
+
+          await exportWithUniversityTemplate(
+            timetableData,
+            `${selectedDeptName}-${selectedSectionName}-Semester-${selectedSemester}`,
+            {
+              departmentName: selectedDeptName || getDepartmentNameFromEntries(timetableData),
+              sectionName: selectedSectionName || "Section",
+              semester: parseInt(selectedSemester || `${timetableData[0]?.semester || 1}`, 10),
+              fileName: `${sanitizeTimetableFilename(
+                `${selectedDeptName || "Department"}-${selectedSectionName || "Section"}-Semester-${selectedSemester || timetableData[0]?.semester || 1}`,
+              )}.pdf`,
+            },
+          );
+        } else {
+          const exportItems = Object.entries(allTimetablesData).flatMap(([deptId, department]) =>
+            Object.values(department.sections)
+              .filter((section) => {
+                const exportKey = `${deptId}|${section.sectionName}|${section.semester}`;
+                return selectedExportKeys.length === 0 || selectedExportKeys.includes(exportKey);
+              })
+              .map((section) => ({
+                title: `${department.departmentName} - ${section.sectionName} - Semester ${section.semester}`,
+                entries: section.entries,
+                departmentName: department.departmentName,
+                sectionName: section.sectionName,
+                semester: section.semester,
+              })),
+          );
+
+          if (exportItems.length === 0) {
+            throw new Error("No timetables selected for export");
+          }
+
+          await exportUniversityTemplateBatch(
+            exportItems,
+            exportItems.length === 1
+              ? `${sanitizeTimetableFilename(exportItems[0].title)}.pdf`
+              : `timetables-collection-${new Date().toISOString().split("T")[0]}.pdf`,
+          );
+        }
+
+        toast({ title: "Exported", description: "Template PDF downloaded successfully." });
+        if (viewMode === "all") {
+          setExportDialogOpen(false);
+        }
+        return;
+      }
+
       injectPdfStyles();
-      if (viewMode === 'single') {
-        if (!timetableData.length) {
-          toast({ title: 'Nothing to export', description: 'Load a timetable first', variant: 'destructive' });
-          return;
-        }
-        const element = document.getElementById('single-timetable-export');
+
+      if (viewMode === "single") {
+        const element = document.getElementById("single-timetable-export");
         if (!element) {
-          toast({ title: 'Error', description: 'Could not find timetable element', variant: 'destructive' });
-          return;
+          throw new Error("Could not find timetable element");
         }
-        const canvas = await html2canvas(element, { scale: 2, backgroundColor: '#ffffff', useCORS: true, allowTaint: true, logging: false });
-        const imgData = canvas.toDataURL('image/png');
-        const pdf = new jsPDF('landscape', 'mm', 'a4');
+
+        const canvas = await html2canvas(element, {
+          scale: 2,
+          backgroundColor: "#ffffff",
+          useCORS: true,
+          allowTaint: true,
+          logging: false,
+        });
+        const imgData = canvas.toDataURL("image/png");
+        const pdf = new jsPDF("landscape", "mm", "a4");
         const pageWidth = pdf.internal.pageSize.getWidth();
         const pageHeight = pdf.internal.pageSize.getHeight();
         const margin = 10;
         const usableWidth = pageWidth - margin * 2;
         const imgHeight = canvas.height * (usableWidth / canvas.width);
-        let y = margin;
-        if (imgHeight < pageHeight - margin * 2) {
-          // center vertically if shorter
-          y = (pageHeight - imgHeight) / 2;
-        }
-        pdf.addImage(imgData, 'PNG', margin, y, usableWidth, imgHeight);
-        const fileName = `${selectedDeptName || 'Department'}-${selectedSectionName || 'Section'}-Sem${selectedSemester || ''}-timetable.pdf`.replace(/\s+/g, '_');
-        pdf.save(fileName);
+        pdf.addImage(imgData, "PNG", margin, (pageHeight - imgHeight) / 2, usableWidth, imgHeight);
+        pdf.save("timetable.pdf");
       } else {
-        // all timetables: optionally filter by selectedExportKeys
-        const allGrids = Array.from(document.querySelectorAll('.timetable-grid-export')) as HTMLElement[];
-        const grids = selectedExportKeys.length
-          ? allGrids.filter(g => selectedExportKeys.includes(g.dataset.exportKey || ''))
+        const allGrids = Array.from(document.querySelectorAll(".timetable-grid-export")) as HTMLElement[];
+        const grids = selectedExportKeys.length > 0
+          ? allGrids.filter((grid) => selectedExportKeys.includes(grid.dataset.exportKey || ""))
           : allGrids;
+
         if (!grids.length) {
-          toast({ title: 'Nothing to export', description: 'No timetables loaded', variant: 'destructive' });
-          return;
+          throw new Error("No timetables loaded or selected");
         }
-        const pdf = new jsPDF('landscape', 'mm', 'a4');
+
+        const pdf = new jsPDF("landscape", "mm", "a4");
         let first = true;
-        for (const grid of Array.from(grids)) {
-          const canvas = await html2canvas(grid as HTMLElement, { scale: 2, backgroundColor: '#ffffff', useCORS: true, allowTaint: true, logging: false });
-          const imgData = canvas.toDataURL('image/png');
-          if (!first) pdf.addPage();
+
+        for (const grid of grids) {
+          const canvas = await html2canvas(grid, {
+            scale: 2,
+            backgroundColor: "#ffffff",
+            useCORS: true,
+            allowTaint: true,
+            logging: false,
+          });
+          const imgData = canvas.toDataURL("image/png");
+          if (!first) {
+            pdf.addPage();
+          }
+
           const pageWidth = pdf.internal.pageSize.getWidth();
-            const pageHeight = pdf.internal.pageSize.getHeight();
-            const margin = 10;
-            const usableWidth = pageWidth - margin * 2;
-            const imgHeight = canvas.height * (usableWidth / canvas.width);
-            let y = margin;
-            if (imgHeight < pageHeight - margin * 2) {
-              y = (pageHeight - imgHeight) / 2;
-            }
-            pdf.addImage(imgData, 'PNG', margin, y, usableWidth, imgHeight);
+          const usableWidth = pageWidth - 20;
+          const imgHeight = canvas.height * (usableWidth / canvas.width);
+          pdf.addImage(imgData, "PNG", 10, 10, usableWidth, imgHeight);
           first = false;
         }
-        const nameSuffix = selectedExportKeys.length ? 'selected' : 'all';
-        pdf.save(`${nameSuffix}-timetables.pdf`);
+
+        pdf.save("timetables-collection.pdf");
       }
-      toast({ title: 'Exported', description: 'PDF downloaded successfully' });
+
+      toast({ title: "Exported", description: "PDF downloaded successfully." });
+      if (viewMode === "all") {
+        setExportDialogOpen(false);
+      }
     } catch (err) {
-      console.error('PDF export error', err);
-      toast({ title: 'Export failed', description: 'Could not generate PDF', variant: 'destructive' });
+      console.error("PDF export error", err);
+      toast({
+        title: "Export failed",
+        description: (err as Error).message || "Could not generate PDF",
+        variant: "destructive",
+      });
     } finally {
+      removePdfStyles();
       setExporting(false);
-      setExportDialogOpen(false);
-  removePdfStyles();
     }
   };
-
   const toggleExportKey = (key: string) => {
+
     setSelectedExportKeys(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
   };
 
@@ -1361,7 +1455,7 @@ export default function TimetableView() {
             onClick={handlePrint}
           >
             <Printer className="w-4 h-4" />
-            {isMobile ? "Print" : "Print"}
+            Print
           </Button>
           <Button
             variant="outline"
@@ -1381,7 +1475,7 @@ export default function TimetableView() {
               disabled={exporting || !Object.keys(allTimetablesData).length}
             >
               <Download className="w-4 h-4" />
-              {exporting ? 'Downloading...' : (selectedExportKeys.length > 0 ? `Download Selected (${selectedExportKeys.length})` : 'Download All')}
+              {exporting ? 'Downloading...' : (selectedExportKeys.length > 0 ? `Download Selected (${selectedExportKeys.length})` : 'Download All Templates')}
             </Button>
           )}
           {viewMode === 'all' ? (
@@ -1393,7 +1487,7 @@ export default function TimetableView() {
               disabled={exporting || (viewMode === 'all' && !Object.keys(allTimetablesData).length)}
             >
               <Download className="w-4 h-4" />
-              {exporting ? 'Exporting...' : 'Export'}
+              {exporting ? 'Exporting...' : 'Choose Multiple'}
             </Button>
           ) : (
             <Button
@@ -1404,7 +1498,7 @@ export default function TimetableView() {
               disabled={exporting || (viewMode === 'single' && !timetableData.length)}
             >
               <Download className="w-4 h-4" />
-              {exporting ? 'Exporting...' : 'Export'}
+              {exporting ? 'Exporting...' : 'Download Template'}
             </Button>
           )}
           <Button 
@@ -1990,12 +2084,54 @@ export default function TimetableView() {
         </div>
       )}
 
+      {/* Print Selection Dialog */}
+      <Dialog open={printDialogOpen} onOpenChange={setPrintDialogOpen}>
+        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Printer className="w-5 h-5" /> Select Timetable to Print</DialogTitle>
+            <DialogDescription>Choose which timetable to load and print in MBU format.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            {availableTimetables.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">No timetables found. Generate timetables first.</p>
+            ) : (
+              availableTimetables.map(tt => {
+                const key = getTimetableKey(tt.sectionId, tt.semester);
+                return (
+                  <div
+                    key={key}
+                    onClick={() => setPrintingKey(key)}
+                    className={`p-3 border rounded-lg cursor-pointer transition-all hover:bg-accent ${
+                      printingKey === key ? 'border-primary bg-primary/10' : ''
+                    }`}
+                  >
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <p className="font-semibold">{tt.sectionName}</p>
+                        <p className="text-sm text-muted-foreground">{tt.departmentName}</p>
+                      </div>
+                      <Badge variant="secondary">Sem {tt.semester}</Badge>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPrintDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handlePrintSelected} disabled={!printingKey} className="gap-2">
+              <Printer className="w-4 h-4" /> Print Selected
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Select Timetables to Export</DialogTitle>
             <DialogDescription>
-              Choose specific section timetables. Leave all unselected to export every timetable.
+              Choose the exact section timetables to download in the university template. Leave all unselected to export every timetable.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-6 mt-2">
@@ -2037,7 +2173,7 @@ export default function TimetableView() {
           <DialogFooter className="mt-4 flex gap-2">
             <Button type="button" variant="outline" onClick={() => setExportDialogOpen(false)} disabled={exporting}>Cancel</Button>
             <Button type="button" onClick={handleExportPDF} disabled={exporting} className="gap-2">
-              {exporting ? 'Exporting...' : `Export ${selectedExportKeys.length ? 'Selected' : 'All'}`}
+              {exporting ? 'Exporting...' : `Download ${selectedExportKeys.length ? 'Selected' : 'All'} Templates`}
             </Button>
           </DialogFooter>
         </DialogContent>

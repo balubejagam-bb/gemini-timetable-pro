@@ -7,9 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Sparkles, Brain, AlertTriangle, Settings, Zap, Database, SlidersHorizontal, Search } from "lucide-react";
+import { Sparkles, Brain, AlertTriangle, Settings, Zap, Database, SlidersHorizontal, Search, Clock, Calendar, Plus, Trash2 } from "lucide-react";
 import { useMemo } from 'react';
 import { useToast } from "@/hooks/use-toast";
+import { env } from "@/lib/env";
 import { supabase } from "@/integrations/supabase/client";
 import { ClientTimetableGenerator, SimpleTimetableGenerator } from "@/lib/timetableGenerator";
 import DatabaseDebug from "@/lib/databaseDebug";
@@ -60,6 +61,26 @@ interface Room {
   floor?: number;
 }
 
+const DEFAULT_PERIOD_TIMINGS = [
+  { start: "09:00", end: "10:00" },
+  { start: "10:15", end: "11:15" },
+  { start: "11:15", end: "12:15" },
+  { start: "13:15", end: "14:00" },
+  { start: "14:00", end: "14:45" },
+  { start: "15:00", end: "16:00" },
+  { start: "16:00", end: "17:00" },
+  { start: "17:00", end: "17:45" },
+  { start: "17:45", end: "18:30" },
+  { start: "18:30", end: "19:15" },
+];
+
+const getDefaultTimingConfig = (periodCount: number) =>
+  Array.from({ length: periodCount }, (_, index) => ({
+    slot: index + 1,
+    start: DEFAULT_PERIOD_TIMINGS[index]?.start || `${String(8 + index).padStart(2, "0")}:00`,
+    end: DEFAULT_PERIOD_TIMINGS[index]?.end || `${String(9 + index).padStart(2, "0")}:00`,
+  }));
+
 export default function GenerateTimetable() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -86,6 +107,18 @@ export default function GenerateTimetable() {
   const [availableTimings, setAvailableTimings] = useState<{ id: string; day_of_week: number; start_time: string; end_time: string }[]>([]);
   const [selectedTimingIds, setSelectedTimingIds] = useState<string[]>([]);
   
+  // Dynamic period/day configuration
+  const [periodsPerDay, setPeriodsPerDay] = useState(7);
+  const [daysPerWeek, setDaysPerWeek] = useState(5);
+  const [customTimings, setCustomTimings] = useState<Array<{ slot: number; start: string; end: string }>>(
+    getDefaultTimingConfig(7)
+  );
+
+  // Lab selection: which subjects should have a lab session (2 consecutive periods)
+  const [labSubjectIds, setLabSubjectIds] = useState<Set<string>>(new Set());
+  // Staff-subject assignment: user can manually assign staff to subjects
+  const [staffSubjectMap, setStaffSubjectMap] = useState<Record<string, string>>({}); // subjectId -> staffId
+
   // Search states
   const [sectionSearch, setSectionSearch] = useState("");
   const [subjectSearch, setSubjectSearch] = useState("");
@@ -138,14 +171,21 @@ export default function GenerateTimetable() {
     fetchData();
   }, []);
   const runWithBackoff = async <T,>(operation: () => Promise<T>, maxAttempts = 3, baseDelay = 1000): Promise<T> => {
+    const isQuotaError = (message: string) =>
+      /429|quota|rate limit|resource exhausted/i.test(message);
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        setBackoffStatus({ attempt, message: attempt === 1 ? "Running Gemini 1.5 Pro pipeline..." : `Retry ${attempt}/${maxAttempts} with adaptive backoff...` });
+        setBackoffStatus({ attempt, message: attempt === 1 ? "Running Gemini Flash-Lite pipeline..." : `Retry ${attempt}/${maxAttempts} with adaptive backoff...` });
         const result = await operation();
         setBackoffStatus({ attempt, message: `Succeeded after ${attempt} attempt(s).` });
         return result;
       } catch (error) {
         const err = error as Error;
+        if (isQuotaError(err.message)) {
+          setBackoffStatus({ attempt, message: `Gemini quota/rate limit reached: ${err.message}` });
+          throw err;
+        }
         if (attempt === maxAttempts) {
           setBackoffStatus({ attempt, message: `Failed after ${maxAttempts} attempts: ${err.message}` });
           throw err;
@@ -179,6 +219,15 @@ export default function GenerateTimetable() {
       return;
     }
 
+    if (selectedRoomIds.length === 0) {
+      toast({
+        title: "Rooms Required",
+        description: "Please select at least one classroom or lab room before generating timetables.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setIsGenerating(true);
     setProgress(0);
     setBackoffStatus({ attempt: 0, message: "Priming ML pipeline..." });
@@ -188,8 +237,8 @@ export default function GenerateTimetable() {
       
       console.log('Starting client-side AI timetable generation...');
       console.log('Environment check:', {
-        hasGoogleKey: !!import.meta.env.VITE_GOOGLE_AI_API_KEY,
-        keyPrefix: import.meta.env.VITE_GOOGLE_AI_API_KEY?.substring(0, 10) || 'NOT_FOUND'
+        hasGoogleKey: !!env.GOOGLE_AI_API_KEY,
+        keyPrefix: env.GOOGLE_AI_API_KEY?.substring(0, 10) || 'NOT_FOUND'
       });
       
       // Only use AI generation via adaptive backoff
@@ -203,8 +252,13 @@ export default function GenerateTimetable() {
             sections: selectedSections.length ? selectedSections : undefined,
             subjects: selectedSubjects.length ? selectedSubjects : undefined,
             staff: selectedStaffIds.length ? selectedStaffIds : undefined,
-            rooms: selectedRoomIds.length ? selectedRoomIds : undefined
-          } : undefined
+            rooms: selectedRoomIds.length ? selectedRoomIds : undefined,
+            periodsPerDay,
+            daysPerWeek,
+            customTimings,
+            labSubjectIds: Array.from(labSubjectIds),
+            staffSubjectMap,
+          } : { periodsPerDay, daysPerWeek, customTimings, labSubjectIds: Array.from(labSubjectIds), staffSubjectMap }
         );
       };
 
@@ -230,6 +284,15 @@ export default function GenerateTimetable() {
       console.error('Error generating timetables:', error);
       setIsGenerating(false);
       setProgress(0);
+      const err = error as Error;
+      if (/429|quota|rate limit|resource exhausted/i.test(err.message || "")) {
+        toast({
+          title: "Gemini quota reached",
+          description: "Switching to offline timetable generation.",
+        });
+        await handleOfflineGenerate();
+        return;
+      }
       toast({
         title: "Error",
         description: `Failed to generate timetables: ${error.message}. Please ensure you have valid data and API keys configured.`,
@@ -247,6 +310,15 @@ export default function GenerateTimetable() {
       return;
     }
 
+    if (selectedRoomIds.length === 0) {
+      toast({
+        title: "Rooms Required",
+        description: "Select at least one room before running offline generation.",
+        variant: "destructive"
+      });
+      return;
+    }
+
     setOfflineGenerating(true);
     try {
       const simpleGenerator = new SimpleTimetableGenerator();
@@ -258,7 +330,12 @@ export default function GenerateTimetable() {
           subjects: selectedSubjects.length ? selectedSubjects : undefined,
           staff: selectedStaffIds.length ? selectedStaffIds : undefined,
           sections: selectedSections.length ? selectedSections : undefined,
-          advancedMode: advancedMode
+          advancedMode: advancedMode,
+          periodsPerDay,
+          daysPerWeek,
+          customTimings,
+          labSubjectIds: Array.from(labSubjectIds),
+          staffSubjectMap,
         }
       );
 
@@ -366,26 +443,39 @@ export default function GenerateTimetable() {
     s.name.toLowerCase().includes(staffSearch.toLowerCase())
   );
 
-  const filteredRoomsDisplay = allRooms.filter(r => 
-    r.room_number.toLowerCase().includes(roomSearch.toLowerCase()) ||
-    (r.room_type || '').toLowerCase().includes(roomSearch.toLowerCase())
+  const filteredClassRoomsDisplay = allRooms.filter(r =>
+    !((r.room_type || '').toLowerCase().includes('lab') || r.room_number.toLowerCase().includes('lab')) &&
+    (r.room_number.toLowerCase().includes(roomSearch.toLowerCase()) ||
+      (r.room_type || '').toLowerCase().includes(roomSearch.toLowerCase()))
   );
+  const filteredLabRoomsDisplay = allRooms.filter(r =>
+    ((r.room_type || '').toLowerCase().includes('lab') || r.room_number.toLowerCase().includes('lab')) &&
+    (r.room_number.toLowerCase().includes(roomSearch.toLowerCase()) ||
+      (r.room_type || '').toLowerCase().includes(roomSearch.toLowerCase()))
+  );
+  const selectedRoomDetails = allRooms.filter(room => selectedRoomIds.includes(room.id));
+  const selectedLabRoomCount = selectedRoomDetails.filter(room =>
+    (room.room_type || '').toLowerCase().includes('lab') || room.room_number.toLowerCase().includes('lab')
+  ).length;
+  const selectedClassRoomCount = Math.max(selectedRoomDetails.length - selectedLabRoomCount, 0);
 
-  const selectAll = (type: 'sections' | 'subjects' | 'staff' | 'rooms' | 'timings') => {
+  const selectAll = (type: 'sections' | 'subjects' | 'staff' | 'classRooms' | 'labRooms' | 'timings') => {
     switch(type){
       case 'sections': setSelectedSections(filteredSectionsDisplay.map(s=>s.id)); break;
       case 'subjects': setSelectedSubjects(filteredSubjectsDisplay.map(s=>s.id)); break;
       case 'staff': setSelectedStaffIds(filteredStaffDisplay.map(s=>s.id)); break;
-      case 'rooms': setSelectedRoomIds(filteredRoomsDisplay.map(r=>r.id)); break;
+      case 'classRooms': setSelectedRoomIds(prev => Array.from(new Set([...prev, ...filteredClassRoomsDisplay.map(r=>r.id)]))); break;
+      case 'labRooms': setSelectedRoomIds(prev => Array.from(new Set([...prev, ...filteredLabRoomsDisplay.map(r=>r.id)]))); break;
       case 'timings': setSelectedTimingIds(allTimingIds); break;
     }
   };
-  const clearAll = (type: 'sections' | 'subjects' | 'staff' | 'rooms' | 'timings') => {
+  const clearAll = (type: 'sections' | 'subjects' | 'staff' | 'classRooms' | 'labRooms' | 'timings') => {
     switch(type){
       case 'sections': setSelectedSections([]); break;
       case 'subjects': setSelectedSubjects([]); break;
       case 'staff': setSelectedStaffIds([]); break;
-      case 'rooms': setSelectedRoomIds([]); break;
+      case 'classRooms': setSelectedRoomIds(prev => prev.filter(id => !filteredClassRoomsDisplay.some(r => r.id === id))); break;
+      case 'labRooms': setSelectedRoomIds(prev => prev.filter(id => !filteredLabRoomsDisplay.some(r => r.id === id))); break;
       case 'timings': setSelectedTimingIds([]); break;
     }
   };
@@ -402,7 +492,7 @@ export default function GenerateTimetable() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Generate Timetable</h1>
           <p className="text-muted-foreground">
-            Use AI to automatically generate optimized timetables
+            Build production-ready online and offline timetables with strict lab, room, and template rules.
           </p>
         </div>
       </div>
@@ -555,7 +645,7 @@ export default function GenerateTimetable() {
                 </div>
               </div>
 
-              {/* Subjects */}
+              {/* Subjects with Lab Toggle & Staff Assignment */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <div className="flex flex-col gap-1">
@@ -579,29 +669,89 @@ export default function GenerateTimetable() {
                     className="pl-8"
                   />
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
-                  {filteredSubjectsDisplay.map(subject => (
-                    <div key={subject.id} className="flex items-center space-x-2">
-                      <Checkbox 
-                        id={`sub-${subject.id}`}
-                        checked={selectedSubjects.includes(subject.id)}
-                        onCheckedChange={(checked) => {
-                          if(checked) setSelectedSubjects(prev => [...prev, subject.id]);
-                          else setSelectedSubjects(prev => prev.filter(id => id !== subject.id));
-                        }}
-                      />
-                      <Label htmlFor={`sub-${subject.id}`} className="text-xs cursor-pointer truncate" title={`${subject.name} (${subject.code})`}>
-                        <span className="text-muted-foreground mr-1">[Sem {subject.semester}]</span>
-                        {subject.name} <span className="text-muted-foreground">({subject.code})</span>
-                      </Label>
-                    </div>
-                  ))}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-y-auto border rounded-md p-2">
+                  {filteredSubjectsDisplay.map(subject => {
+                    const isSelected = selectedSubjects.includes(subject.id);
+                    const hasLab = labSubjectIds.has(subject.id);
+                    const assignedStaffId = staffSubjectMap[subject.id];
+                    const isDbLab = subject.subject_type?.toLowerCase().includes('lab') || subject.subject_type?.toLowerCase().includes('practical');
+                    return (
+                      <div key={subject.id} className={`flex flex-col gap-1 p-2 rounded-lg border transition-all ${isSelected ? 'border-primary/40 bg-primary/5' : 'border-transparent'}`}>
+                        <div className="flex items-center gap-2">
+                          <Checkbox 
+                            id={`sub-${subject.id}`}
+                            checked={isSelected}
+                            onCheckedChange={(checked) => {
+                              if(checked) setSelectedSubjects(prev => [...prev, subject.id]);
+                              else {
+                                setSelectedSubjects(prev => prev.filter(id => id !== subject.id));
+                                setLabSubjectIds(prev => { const n = new Set(prev); n.delete(subject.id); return n; });
+                              }
+                            }}
+                          />
+                          <Label htmlFor={`sub-${subject.id}`} className="text-xs cursor-pointer truncate flex-1" title={`${subject.name} (${subject.code})`}>
+                            <span className="text-muted-foreground mr-1">[Sem {subject.semester}]</span>
+                            {subject.name} <span className="text-muted-foreground">({subject.code})</span>
+                          </Label>
+                          {isDbLab && <span className="text-[9px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium shrink-0">LAB</span>}
+                        </div>
+                        {/* Lab toggle & staff assignment — only shown when subject is selected */}
+                        {isSelected && (
+                          <div className="flex items-center gap-3 pl-6 mt-1">
+                            {!isDbLab && (
+                              <label className="flex items-center gap-1.5 text-[10px] cursor-pointer">
+                                <Checkbox 
+                                  checked={hasLab}
+                                  onCheckedChange={(checked) => {
+                                    setLabSubjectIds(prev => {
+                                      const n = new Set(prev);
+                                      if (checked) n.add(subject.id);
+                                      else n.delete(subject.id);
+                                      return n;
+                                    });
+                                  }}
+                                  className="h-3.5 w-3.5"
+                                />
+                                <span className="text-green-700 font-medium">Needs Lab</span>
+                              </label>
+                            )}
+                            <Select 
+                              value={assignedStaffId || '_auto'} 
+                              onValueChange={(v) => {
+                                setStaffSubjectMap(prev => {
+                                  const n = { ...prev };
+                                  if (v === '_auto') delete n[subject.id];
+                                  else n[subject.id] = v;
+                                  return n;
+                                });
+                              }}
+                            >
+                              <SelectTrigger className="h-6 text-[10px] w-32">
+                                <SelectValue placeholder="Auto Staff" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="_auto">Auto Assign</SelectItem>
+                                {allStaff.map(s => (
+                                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                   {filteredSubjectsDisplay.length === 0 && (
                     <div className="col-span-full text-center text-sm text-muted-foreground py-2">
                       No subjects found
                     </div>
                   )}
                 </div>
+                {selectedSubjects.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded px-3 py-1.5">
+                    <span>{selectedSubjects.length} subjects selected · {labSubjectIds.size} with labs · {Object.keys(staffSubjectMap).length} staff assigned</span>
+                  </div>
+                )}
               </div>
 
               {/* Staff */}
@@ -657,8 +807,10 @@ export default function GenerateTimetable() {
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-medium">Rooms</h3>
                   <div className="space-x-2">
-                    <Button variant="ghost" size="sm" onClick={() => selectAll('rooms')}>All</Button>
-                    <Button variant="ghost" size="sm" onClick={() => clearAll('rooms')}>None</Button>
+                    <Button variant="ghost" size="sm" onClick={() => selectAll('classRooms')}>All Classrooms</Button>
+                    <Button variant="ghost" size="sm" onClick={() => selectAll('labRooms')}>All Labs</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearAll('classRooms')}>Clear Classrooms</Button>
+                    <Button variant="ghost" size="sm" onClick={() => clearAll('labRooms')}>Clear Labs</Button>
                   </div>
                 </div>
                 <div className="relative">
@@ -670,53 +822,160 @@ export default function GenerateTimetable() {
                     className="pl-8"
                   />
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
-                  {filteredRoomsDisplay.map(room => (
-                    <div key={room.id} className="flex items-center space-x-2">
-                      <Checkbox 
-                        id={`room-${room.id}`}
-                        checked={selectedRoomIds.includes(room.id)}
-                        onCheckedChange={(checked) => {
-                          if(checked) setSelectedRoomIds(prev => [...prev, room.id]);
-                          else setSelectedRoomIds(prev => prev.filter(id => id !== room.id));
-                        }}
-                      />
-                      <Label htmlFor={`room-${room.id}`} className="text-xs cursor-pointer truncate" title={`${room.room_number} (${room.room_type || 'General'})`}>
-                        {room.room_number} <span className="text-muted-foreground">({room.room_type || 'Gen'})</span>
-                      </Label>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-slate-700">Classroom Numbers</h4>
+                      <span className="text-[11px] text-muted-foreground">{selectedClassRoomCount} selected</span>
                     </div>
-                  ))}
-                  {filteredRoomsDisplay.length === 0 && (
-                    <div className="col-span-full text-center text-sm text-muted-foreground py-2">
-                      No rooms found
+                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                      {filteredClassRoomsDisplay.map(room => (
+                        <div key={room.id} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`room-class-${room.id}`}
+                            checked={selectedRoomIds.includes(room.id)}
+                            onCheckedChange={(checked) => {
+                              if (checked) setSelectedRoomIds(prev => [...prev, room.id]);
+                              else setSelectedRoomIds(prev => prev.filter(id => id !== room.id));
+                            }}
+                          />
+                          <Label htmlFor={`room-class-${room.id}`} className="text-xs cursor-pointer truncate" title={`${room.room_number} (${room.room_type || 'General'})`}>
+                            {room.room_number} <span className="text-muted-foreground">({room.room_type || 'Gen'})</span>
+                          </Label>
+                        </div>
+                      ))}
+                      {filteredClassRoomsDisplay.length === 0 && (
+                        <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                          No classroom rooms found
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-semibold text-amber-700">Lab Room Numbers</h4>
+                      <span className="text-[11px] text-muted-foreground">{selectedLabRoomCount} selected</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto border rounded-md p-2">
+                      {filteredLabRoomsDisplay.map(room => (
+                        <div key={room.id} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`room-lab-${room.id}`}
+                            checked={selectedRoomIds.includes(room.id)}
+                            onCheckedChange={(checked) => {
+                              if (checked) setSelectedRoomIds(prev => [...prev, room.id]);
+                              else setSelectedRoomIds(prev => prev.filter(id => id !== room.id));
+                            }}
+                          />
+                          <Label htmlFor={`room-lab-${room.id}`} className="text-xs cursor-pointer truncate" title={`${room.room_number} (${room.room_type || 'General'})`}>
+                            {room.room_number} <span className="text-muted-foreground">({room.room_type || 'Gen'})</span>
+                          </Label>
+                        </div>
+                      ))}
+                      {filteredLabRoomsDisplay.length === 0 && (
+                        <div className="col-span-full text-center text-sm text-muted-foreground py-2">
+                          No lab rooms found
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+                  Room selection required:
+                  {selectedRoomIds.length === 0
+                    ? " Please select at least one classroom or lab room before generating."
+                    : ` ${selectedRoomDetails.length} room(s) selected: ${selectedClassRoomCount} classroom, ${selectedLabRoomCount} lab.`}
+                </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  Lab policy: selected lab rooms are used for lab periods, and each lab block stays highlighted as a single yellow block.
                 </div>
               </div>
 
-              {/* Timings (Informational) */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-semibold">Timings (reference)</h4>
-                  <div className="flex gap-2">
-                    <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>selectAll('timings')}>Select All</Button>
-                    <Button type="button" variant="outline" className="h-7 px-2 text-xs" onClick={()=>clearAll('timings')}>Clear</Button>
+              {/* Period & Timing Configuration */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary shadow-sm">
+                    <Clock className="h-4 w-4" />
+                  </div>
+                  <h3 className="text-sm font-semibold">Period & Timing Configuration</h3>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Periods per day */}
+                  <div>
+                    <Label className="text-xs mb-1 block">Periods per Day</Label>
+                    <Select value={periodsPerDay.toString()} onValueChange={(v) => {
+                      const n = parseInt(v);
+                      setPeriodsPerDay(n);
+                      setCustomTimings(getDefaultTimingConfig(n));
+                    }}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {[4, 5, 6, 7, 8, 9, 10].map(n => (
+                          <SelectItem key={n} value={n.toString()}>{n} Periods</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Days per week */}
+                  <div>
+                    <Label className="text-xs mb-1 block">Days per Week</Label>
+                    <Select value={daysPerWeek.toString()} onValueChange={(v) => setDaysPerWeek(parseInt(v))}>
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="5">Mon – Fri (5 days)</SelectItem>
+                        <SelectItem value="6">Mon – Sat (6 days)</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
-                <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3 max-h-40 overflow-y-auto pr-1 text-[11px]">
-                  {availableTimings.map(t => {
-                    const key = t.id;
-                    const label = `${t.day_of_week}-${t.start_time?.slice(0,5)}-${t.end_time?.slice(0,5)}`;
-                    return (
-                      <label key={key} className={`flex items-center gap-2 border rounded px-2 py-1 cursor-pointer ${selectedTimingIds.includes(key)?'bg-primary/10 border-primary':'border-border'}`}
-                        onClick={()=>toggleInList(key, selectedTimingIds, setSelectedTimingIds)}>
-                        <Checkbox checked={selectedTimingIds.includes(key)} onCheckedChange={()=>{}} />
-                        <span className="truncate" title={label}>{label}</span>
-                      </label>
-                    );
-                  })}
+
+                {/* Summary badge */}
+                <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded px-3 py-1.5">
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span>{periodsPerDay} periods × {daysPerWeek} days = <strong className="text-foreground">{periodsPerDay * daysPerWeek} total slots/week</strong></span>
                 </div>
-                <p className="text-xs text-muted-foreground mt-1">(Selecting timings is optional; generation uses DB timings automatically.)</p>
+
+                {/* Custom period timings */}
+                <div className="space-y-2">
+                  <Label className="text-xs text-muted-foreground">Period Timings (editable)</Label>
+                  <div className="grid gap-2 max-h-56 overflow-y-auto pr-1">
+                    {customTimings.map((t, idx) => (
+                      <div key={t.slot} className="grid grid-cols-[72px_minmax(0,1fr)_24px_minmax(0,1fr)] items-center gap-2 text-xs">
+                        <span className="font-medium text-muted-foreground">Period {t.slot}</span>
+                        <Input
+                          type="time"
+                          step={300}
+                          value={t.start}
+                          onChange={(e) => {
+                            const updated = [...customTimings];
+                            updated[idx] = { ...updated[idx], start: e.target.value };
+                            setCustomTimings(updated);
+                          }}
+                          className="h-9 min-w-0 text-xs pr-3"
+                        />
+                        <span className="text-center text-muted-foreground">to</span>
+                        <Input
+                          type="time"
+                          step={300}
+                          value={t.end}
+                          onChange={(e) => {
+                            const updated = [...customTimings];
+                            updated[idx] = { ...updated[idx], end: e.target.value };
+                            setCustomTimings(updated);
+                          }}
+                          className="h-9 min-w-0 text-xs pr-3"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -724,6 +983,49 @@ export default function GenerateTimetable() {
 
         {/* AI Features & Info */}
         <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Generation Summary</CardTitle>
+              <CardDescription>Quick sanity check before we run the generator.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Departments</span>
+                <span className="font-medium">{selectedDepartments.length}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Sections</span>
+                <span className="font-medium">{selectedSections.length}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Subjects</span>
+                <span className="font-medium">{selectedSubjects.length}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Lab Blocks</span>
+                <span className="font-medium">{labSubjectIds.size}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Room Pool</span>
+                <span className="font-medium">{selectedRoomIds.length || allRooms.length}</span>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Scheduling Rules</CardTitle>
+              <CardDescription>Applied to both online and offline generation.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2 text-sm text-muted-foreground">
+              <p>1. Every lab is one 2-period continuous block on a single day.</p>
+              <p>2. Each lab subject appears only once in the week.</p>
+              <p>3. A section gets at most one lab block on a day.</p>
+              <p>4. Theory stays in classrooms; labs stay in lab rooms.</p>
+              <p>5. Downloads use the university-style template format.</p>
+            </CardContent>
+          </Card>
+
           <div className="space-y-3">
             <Button 
               onClick={handleGenerate}
@@ -732,7 +1034,7 @@ export default function GenerateTimetable() {
               className="w-full gap-2 animate-glow"
             >
               <Sparkles className="w-4 h-4" />
-              {isGenerating ? "Generating..." : "Generate with AI"}
+              {isGenerating ? "Generating..." : "Generate Online (AI)"}
             </Button>
             
             <Button 
@@ -743,7 +1045,7 @@ export default function GenerateTimetable() {
               className="w-full gap-2"
             >
               <Zap className="w-4 h-4" />
-              {offlineGenerating ? "Generating Offline..." : "Generate Offline (Heuristic)"}
+              {offlineGenerating ? "Generating Offline..." : "Generate Offline"}
             </Button>
             
             <Button 

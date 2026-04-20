@@ -1,6 +1,6 @@
 import React from 'react';
-import { Card } from '@/components/ui/card';
 import './TimetableTemplate.css';
+import { isLibrarySubjectLike } from '@/lib/newmethod';
 
 interface TimetableSlot {
   subject: string;
@@ -18,6 +18,7 @@ interface TimetableTemplateProps {
   section?: string;
   roomNo?: string;
   effectiveDate?: string;
+  academicYear?: string;
   schedule: {
     [day: string]: {
       [timeSlot: string]: TimetableSlot | null;
@@ -31,6 +32,69 @@ interface TimetableTemplateProps {
   pageNumber?: number;
 }
 
+// MBU Official 7-period layout with Morning break and Lunch break
+// Slot 1: 09:00-10:00  | Slot 2: 10:15-11:15  | Slot 3: 11:15-12:15
+// LUNCH 12:15-01:15
+// Slot 4: 01:15-02:00  | Slot 5: 02:00-02:45
+// BREAK 02:45-03:00
+// Slot 6: 03:00-04:00  | Slot 7: 04:00-05:00
+const MBU_PERIODS = [
+  { key: 'slot1', label: '09:00AM\nTO\n10:00AM', shortLabel: '09-10' },
+  { key: 'slot2', label: '10:15AM\nTO\n11:15AM', shortLabel: '10-11' },
+  { key: 'slot3', label: '11:15AM\nTO\n12:15PM', shortLabel: '11-12' },
+  // LUNCH break inserted visually here
+  { key: 'slot4', label: '01:15PM\nTO\n02:00PM', shortLabel: '1:15-2' },
+  { key: 'slot5', label: '02:00PM\nTO\n02:45PM', shortLabel: '2-2:45' },
+  // Short BREAK
+  { key: 'slot6', label: '03:00PM\nTO\n04:00PM', shortLabel: '3-4' },
+  { key: 'slot7', label: '04:00PM\nTO\n05:00PM', shortLabel: '4-5' },
+];
+
+const DAYS_SHORT = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+const DAYS_FULL  = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const checkIsLab = (slot: TimetableSlot | null | undefined) =>
+  slot && (
+    slot.type?.toLowerCase().includes('lab') ||
+    slot.code?.toLowerCase().includes('lab') ||
+    slot.subject?.toLowerCase().includes('lab') ||
+    slot.subject?.toLowerCase().includes('practical')
+  );
+
+const sameScheduledCell = (left: TimetableSlot | null | undefined, right: TimetableSlot | null | undefined) =>
+  !!left &&
+  !!right &&
+  left.subject === right.subject &&
+  left.code === right.code &&
+  left.staff === right.staff &&
+  left.room === right.room;
+
+const checkIsLibrary = (slot: TimetableSlot | null | undefined) =>
+  slot && (
+    slot.type?.toLowerCase().includes('library') ||
+    slot.subject?.toLowerCase().includes('library') ||
+    slot.code?.toLowerCase().includes('library') ||
+    isLibrarySubjectLike({ name: slot.subject, code: slot.code, subject_type: slot.type })
+  );
+
+// Detect if two consecutive slots have the SAME lab (for visual merging)
+const isSameLabAsPrev = (daySchedule: { [k: string]: TimetableSlot | null }, slotIdx: number) => {
+  if (slotIdx === 0) return false;
+  const prev = daySchedule[MBU_PERIODS[slotIdx - 1].key];
+  const curr = daySchedule[MBU_PERIODS[slotIdx].key];
+  if (!prev || !curr) return false;
+  return sameScheduledCell(prev, curr);
+};
+
+// Detect if this slot's lab continues into the NEXT slot (for colspan)
+const labContinuesNext = (daySchedule: { [k: string]: TimetableSlot | null }, slotIdx: number) => {
+  if (slotIdx >= MBU_PERIODS.length - 1) return false;
+  const curr = daySchedule[MBU_PERIODS[slotIdx].key];
+  const next = daySchedule[MBU_PERIODS[slotIdx + 1].key];
+  if (!curr || !next) return false;
+  return sameScheduledCell(curr, next);
+};
+
 export const TimetableTemplate: React.FC<TimetableTemplateProps> = ({
   title,
   subtitle,
@@ -39,189 +103,249 @@ export const TimetableTemplate: React.FC<TimetableTemplateProps> = ({
   section,
   roomNo,
   effectiveDate,
+  academicYear,
   schedule,
   subjects,
-  pageNumber = 1
+  pageNumber = 1,
 }) => {
-  const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-  const timeSlots = [
-    { label: "09:00AM\nTO\n10:00AM", key: "slot1" },
-    { label: "10:15AM\nTO\n11:15AM", key: "slot2" },
-    { label: "11:15AM\nTO\n12:15PM", key: "slot3" },
-    { label: "01:15PM\nTO\n02:00PM", key: "slot4" },
-    { label: "02:00PM\nTO\n02:45PM", key: "slot5" },
-    { label: "03:00PM\nTO\n04:00PM", key: "slot6" },
-    { label: "04:00PM\nTO\n05:00PM", key: "slot7" }
-  ];
+  const today = new Date();
+  const yr = today.getFullYear();
+  const academicYearStr = academicYear || `${yr}-${(yr + 1).toString().slice(-2)}`;
+  const dateStr = effectiveDate || today.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
 
-  const getColorForSubject = (code: string) => {
-    if (!code) return '#ffffff';
-    // Generate consistent color based on subject code
-    const hash = code.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const colors = [
-      '#E8F5E9', // Light Green
-      '#E3F2FD', // Light Blue
-      '#FFF3E0', // Light Orange
-      '#F3E5F5', // Light Purple
-      '#FFF9C4', // Light Yellow
-      '#FFE0B2', // Light Amber
-    ];
-    return colors[hash % colors.length];
-  };
+  // Determine which days have data (skip Saturday if empty)
+  const activeDays = DAYS_FULL.filter((dayFull, i) => {
+    if (i < 5) return true; // Always show Mon-Fri
+    const daySchedule = schedule[dayFull] || {};
+    return Object.values(daySchedule).some(s => s && s.subject);
+  });
 
   return (
-    <div className="timetable-a4-page bg-white p-8 font-sans">
-      {/* Header */}
-      <div className="border-4 border-black mb-4">
-        <div className="flex items-center justify-between p-4 border-b-2 border-black">
-          <div className="flex items-center gap-4">
-            <div className="w-20 h-20 flex items-center justify-center">
-              <img 
-                src="/mbu-logo.webp" 
-                alt="MBU Logo" 
-                className="w-full h-full object-contain"
-                onError={(e) => {
-                  // Fallback if logo fails to load
-                  const target = e.target as HTMLImageElement;
-                  target.style.display = 'none';
-                  const parent = target.parentElement;
-                  if (parent) {
-                    parent.innerHTML = '<div class="w-20 h-20 bg-red-600 flex items-center justify-center"><div class="text-white font-bold text-center text-xs">MBU<br/>LOGO</div></div>';
-                  }
-                }}
-              />
-            </div>
-            <div>
-              <h1 className="text-2xl font-bold text-red-600">MOHAN BABU UNIVERSITY</h1>
-              <p className="text-sm">Sree Sainath Nagar, A. Rangampet-517102</p>
-            </div>
-          </div>
-          <div className="w-20 h-20 bg-gray-800 text-white flex items-center justify-center text-3xl font-bold">
-            {pageNumber}
-          </div>
-        </div>
-        
-        <div className="text-center py-2 border-b-2 border-black">
-          <h2 className="text-xl font-bold">{title}</h2>
-          {subtitle && <p className="text-sm font-semibold">{subtitle}</p>}
-          {department && <p className="text-lg font-bold uppercase">{department}</p>}
-          {semester && <p className="text-base font-bold">CLASS WORK TIME TABLE</p>}
-          {semester && <p className="text-base font-bold">{semester}</p>}
-          {section && <p className="text-base font-bold">Section: {section}</p>}
-        </div>
+    <div className="tt-page" style={{ fontFamily: 'Arial, Helvetica, sans-serif', background: '#fff', padding: '14px 18px', maxWidth: '297mm', margin: '0 auto', fontSize: '10px' }}>
 
-        <div className="flex justify-between px-4 py-2 bg-gray-100">
-          {roomNo && <p className="font-semibold">Room No.: {roomNo}</p>}
-          <div className="flex-1"></div>
-          {effectiveDate && <p className="font-semibold">W.E.F.: {effectiveDate}</p>}
-        </div>
+      {/* ── HEADER ── */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '4px' }}>
+        <tbody>
+          <tr>
+            <td style={{ width: '70px', padding: '2px' }}>
+              <img src="/mbu-logo.webp" alt="MBU" style={{ width: '60px', height: '60px', objectFit: 'contain' }}
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            </td>
+            <td style={{ verticalAlign: 'middle', padding: '2px' }}>
+              <div style={{ color: '#c00', fontWeight: 'bold', fontSize: '16px', letterSpacing: '0.5px' }}>MOHAN BABU UNIVERSITY</div>
+              <div style={{ fontSize: '9px', color: '#444' }}>Sree Sainath Nagar, A. Rangampet-517102</div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div style={{ textAlign: 'center', fontWeight: 'bold', marginBottom: '2px', lineHeight: '1.5' }}>
+        {title && <div style={{ fontSize: '12px' }}>{title}</div>}
+        {subtitle && <div style={{ fontSize: '11px', textDecoration: 'underline' }}>{subtitle}</div>}
+        <div style={{ fontSize: '11px' }}>CLASS WORK TIME TABLE ({academicYearStr})</div>
+        {semester && <div style={{ fontSize: '11px' }}>{semester}</div>}
       </div>
 
-      {/* Timetable Grid */}
-      <div className="border-2 border-black mb-4">
-        <table className="w-full border-collapse">
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px', fontSize: '10px', fontWeight: 'bold' }}>
+        <div>Room No.: {roomNo || '—'}</div>
+        {section && <div>Section: {section}</div>}
+        <div>W.E.F.: {dateStr}</div>
+      </div>
+
+      {/* ── TIMETABLE GRID ── */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', border: '2px solid #000', marginBottom: '8px' }}>
+        <thead>
+          <tr>
+            <th style={{ ...thStyle, width: '38px', minWidth: '38px', backgroundColor: '#cfcfcf' }}>DAY/<br />HR</th>
+            {/* Periods 1-3 (Morning) */}
+            {MBU_PERIODS.slice(0, 3).map((p) => (
+              <th key={p.key} style={thStyle}>{formatTimeLabel(p.label)}</th>
+            ))}
+            {/* LUNCH column */}
+            <th style={{ ...thStyle, width: '22px', minWidth: '22px', backgroundColor: '#f3f4f6', fontSize: '7px', padding: '2px 1px' }}>
+              L<br />U<br />N<br />C<br />H
+            </th>
+            {/* Periods 4-5 (Afternoon 1) */}
+            {MBU_PERIODS.slice(3, 5).map((p) => (
+              <th key={p.key} style={thStyle}>{formatTimeLabel(p.label)}</th>
+            ))}
+            {/* BREAK column */}
+            <th style={{ ...thStyle, width: '22px', minWidth: '22px', backgroundColor: '#f3f4f6', fontSize: '7px', padding: '2px 1px' }}>
+              B<br />R<br />E<br />A<br />K
+            </th>
+            {/* Periods 6-7 (Afternoon 2) */}
+            {MBU_PERIODS.slice(5, 7).map((p) => (
+              <th key={p.key} style={thStyle}>{formatTimeLabel(p.label)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {activeDays.map((dayFull, dayIdx) => {
+            const daySchedule = schedule[dayFull] || {};
+            return (
+              <tr key={dayFull}>
+                <td style={{ ...tdStyle, backgroundColor: '#d0d0d0', fontWeight: 'bold', textAlign: 'center', width: '38px' }}>
+                  {DAYS_SHORT[DAYS_FULL.indexOf(dayFull)]}
+                </td>
+
+                {/* Morning slots 1-3 */}
+                {renderDayCells(daySchedule, 0, 3)}
+
+                {/* LUNCH */}
+                <td style={{ ...tdStyle, backgroundColor: '#f3f4f6', textAlign: 'center', width: '22px', fontSize: '7px' }}>
+                  L<br />U<br />N<br />C<br />H
+                </td>
+
+                {/* Afternoon slots 4-5 */}
+                {renderDayCells(daySchedule, 3, 5)}
+
+                {/* BREAK */}
+                <td style={{ ...tdStyle, backgroundColor: '#f3f4f6', textAlign: 'center', width: '22px', fontSize: '7px' }}>
+                  B<br />R<br />E<br />A<br />K
+                </td>
+
+                {/* Evening slots 6-7 */}
+                {renderDayCells(daySchedule, 5, 7)}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {/* ── SUBJECT LEGEND ── */}
+      {subjects && subjects.length > 0 && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', border: '2px solid #000', marginBottom: '12px' }}>
           <thead>
-            <tr>
-              <th className="timetable-time-column border-2 border-black bg-gray-300 p-2 text-sm font-bold">
-                DAY/<br/>HR
-              </th>
-              {timeSlots.map((slot, idx) => (
-                <th key={idx} className="border-2 border-black bg-gray-300 p-2 text-xs font-bold whitespace-pre-line">
-                  {slot.label}
-                </th>
-              ))}
+            <tr style={{ backgroundColor: '#d8d8d8' }}>
+              <th style={{ ...thStyle, width: '15%' }}>SUBJECT<br />CODE</th>
+              <th style={{ ...thStyle, width: '50%' }}>SUBJECT NAME</th>
+              <th style={{ ...thStyle, width: '35%' }}>FACULTY NAME</th>
             </tr>
           </thead>
           <tbody>
-            {days.map((day) => (
-              <tr key={day}>
-                <td className="border-2 border-black bg-gray-200 p-2 text-center font-bold text-sm">
-                  {day.toUpperCase().substring(0, 3)}
-                </td>
-                {timeSlots.map((slot, idx) => {
-                  const daySchedule = schedule[day] || {};
-                  const slotData = daySchedule[slot.key];
-                  
-
-
-                  if (!slotData || !slotData.subject) {
-                    return (
-                      <td key={idx} className="border-2 border-black p-2 text-center text-xs text-gray-500">
-                        -
-                      </td>
-                    );
-                  }
-
-                  const bgColor = getColorForSubject(slotData.code);
-                  const isHighlighted = slotData.type === 'lab' || slotData.code.includes('LAB');
-
-                  return (
-                    <td 
-                      key={idx} 
-                      className="border-2 border-black p-1 text-center text-xs font-semibold"
-                      style={{ 
-                        backgroundColor: isHighlighted ? '#C8E6C9' : bgColor
-                      }}
-                    >
-                      <div className="flex flex-col items-center justify-center min-h-[60px]">
-                        <span className="font-bold text-sm">{slotData.code || slotData.subject}</span>
-                        {slotData.type && slotData.code && (
-                          <span className="text-[10px] text-gray-600">({slotData.type})</span>
-                        )}
-                      </div>
-                    </td>
-                  );
-                })}
+            {subjects.map((sub, idx) => (
+              <tr key={idx}>
+                <td style={{ ...tdStyle, textAlign: 'center', fontWeight: 'bold', backgroundColor: idx % 2 === 0 ? '#fff7ed' : '#fffbeb' }}>{sub.code}</td>
+                <td style={{ ...tdStyle, backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fffdf7' }}>{sub.name}</td>
+                <td style={{ ...tdStyle, backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fffdf7' }}>{sub.faculty}</td>
               </tr>
             ))}
           </tbody>
         </table>
-      </div>
-
-      {/* Subject Legend */}
-      {subjects && subjects.length > 0 && (
-        <div className="border-2 border-black">
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="bg-gray-200">
-                <th className="timetable-subject-code-column border-2 border-black p-2 text-sm font-bold">
-                  SUBJECT<br/>CODE
-                </th>
-                <th className="border-2 border-black p-2 text-sm font-bold">
-                  SUBJECT NAME
-                </th>
-                <th className="timetable-faculty-column border-2 border-black p-2 text-sm font-bold">
-                  FACULTY NAME
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {subjects.map((subject, idx) => (
-                <tr key={idx}>
-                  <td className="border-2 border-black p-2 text-center text-sm font-semibold">
-                    {subject.code}
-                  </td>
-                  <td className="border-2 border-black p-2 text-sm">
-                    {subject.name}
-                  </td>
-                  <td className="border-2 border-black p-2 text-sm">
-                    {subject.faculty}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
       )}
+
+      {/* ── FOOTER ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px', fontWeight: 'bold', fontSize: '11px' }}>
+        <div>TT COORDINATOR</div>
+        <div>PROGRAM HEAD, {department?.toUpperCase() || 'DEPT'}</div>
+      </div>
     </div>
   );
 };
 
-// Export component for PDF generation
-export const TimetableTemplatePDF: React.FC<TimetableTemplateProps> = (props) => {
+// ── Render cells for a range of period indices ──────────────────────────────
+function renderDayCells(daySchedule: { [k: string]: TimetableSlot | null }, startIdx: number, endIdx: number) {
+  const cells: React.ReactNode[] = [];
+  let skipNext = false;
+
+  for (let i = startIdx; i < endIdx; i++) {
+    if (skipNext) { skipNext = false; continue; }
+
+    const slot = daySchedule[MBU_PERIODS[i].key] || null;
+    const nextSlot = daySchedule[MBU_PERIODS[i + 1]?.key] || null;
+    const prevSlot = daySchedule[MBU_PERIODS[i - 1]?.key] || null;
+    const isLabSlot = checkIsLab(slot) || sameScheduledCell(slot, nextSlot) || sameScheduledCell(prevSlot, slot);
+    const continues = labContinuesNext(daySchedule, i);
+
+    if (isLabSlot && continues) {
+      // Lab spanning 2 periods — render one merged cell
+      cells.push(
+        <td key={MBU_PERIODS[i].key} colSpan={2} style={{
+          ...tdStyle,
+          backgroundColor: '#fde68a',
+          textAlign: 'center',
+          verticalAlign: 'middle',
+          padding: '6px 4px',
+          fontWeight: 'bold',
+          boxShadow: 'inset 0 0 0 1px #f59e0b',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', minHeight: '34px', justifyContent: 'center' }}>
+            <span style={{ fontSize: '11px', fontWeight: 'bold', lineHeight: '1' }}>{slot!.code}</span>
+            <span style={{ fontSize: '8px', color: '#92400e', background: '#fff7ed', border: '1px solid #fbbf24', borderRadius: '999px', padding: '0 5px' }}>LAB</span>
+            {slot!.room && <span style={{ fontSize: '8px', color: '#333' }}>Room: {slot!.room}</span>}
+          </div>
+        </td>
+      );
+      skipNext = true;
+    } else if (isSameLabAsPrev(daySchedule, i)) {
+      // This cell was already merged into previous — skip
+      continue;
+    } else if (checkIsLibrary(slot)) {
+      cells.push(
+        <td key={MBU_PERIODS[i].key} style={{
+          ...tdStyle,
+          textAlign: 'center',
+          verticalAlign: 'middle',
+          backgroundColor: '#dcfce7',
+          padding: '5px 3px',
+          boxShadow: 'inset 0 0 0 1px #86efac',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', minHeight: '28px', justifyContent: 'center' }}>
+            <span style={{ fontSize: '10px', fontWeight: 'bold', color: '#166534' }}>{slot!.code || slot!.subject}</span>
+            <span style={{ fontSize: '8px', color: '#166534', background: '#f0fdf4', border: '1px solid #86efac', borderRadius: '999px', padding: '0 5px' }}>LIB</span>
+          </div>
+        </td>
+      );
+    } else if (slot && slot.subject) {
+      // Normal theory period
+      cells.push(
+        <td key={MBU_PERIODS[i].key} style={{
+          ...tdStyle,
+          textAlign: 'center',
+          verticalAlign: 'middle',
+          backgroundColor: isLabSlot ? '#fde68a' : '#ffffff',
+          padding: '3px 2px',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0px' }}>
+            <span style={{ fontWeight: 'bold', fontSize: '10px' }}>{slot.code || slot.subject}</span>
+          </div>
+        </td>
+      );
+    } else {
+      // Empty period
+      cells.push(
+        <td key={MBU_PERIODS[i].key} style={{ ...tdStyle, textAlign: 'center', color: '#bbb' }}>—</td>
+      );
+    }
+  }
+  return cells;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function formatTimeLabel(raw: string) {
   return (
-    <div id="timetable-pdf-template">
-      <TimetableTemplate {...props} />
-    </div>
+    <>
+      {raw.split('\n').map((line, i) => (
+        <React.Fragment key={i}>{line}{i < 2 ? <br /> : null}</React.Fragment>
+      ))}
+    </>
   );
+}
+
+const thStyle: React.CSSProperties = {
+  border: '1px solid #000', padding: '3px 2px', textAlign: 'center',
+  backgroundColor: '#d8d8d8', fontWeight: 'bold', fontSize: '8px',
+  whiteSpace: 'pre-line', lineHeight: '1.2',
 };
+
+const tdStyle: React.CSSProperties = {
+  border: '1px solid #000', padding: '3px 2px', fontSize: '10px', lineHeight: '1.2',
+};
+
+// ── PDF wrapper ─────────────────────────────────────────────────────────────
+export const TimetableTemplatePDF: React.FC<TimetableTemplateProps> = (props) => (
+  <div id="timetable-pdf-template">
+    <TimetableTemplate {...props} />
+  </div>
+);
