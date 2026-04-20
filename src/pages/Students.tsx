@@ -140,14 +140,7 @@ export default function Students() {
   ];
 
   const getDefaultFreePeriod = (semester: number, dayIndex: number, timeSlotIndex: number) => {
-    // Alternate between Library and Internship based on semester and position
-    if (semester >= 5) {
-      // Higher semesters get more internship periods
-      return (dayIndex + timeSlotIndex) % 2 === 0 ? 'Internship' : 'Library Period';
-    } else {
-      // Lower semesters get more library periods
-      return (dayIndex + timeSlotIndex) % 3 === 0 ? 'Internship' : 'Library Period';
-    }
+    return 'Free Period';
   };
 
   const generatePersonalizedTimetable = async (student: Student) => {
@@ -164,7 +157,7 @@ export default function Students() {
 
     try {
       setIsGenerating(true);
-      toast.loading('Generating personalized timetable with AI...');
+      toast.loading('Generating personalized timetable offline...');
 
       // Use the StudentTimetableGenerator class
       const generator = new StudentTimetableGenerator();
@@ -186,7 +179,7 @@ export default function Students() {
         student_id: selectedStudentForGeneration.id,
         timetable_json: result.timetable,
         generated_at: new Date().toISOString(),
-        model_version: result.model_version || 'gemini-2.0-flash'
+        model_version: result.model_version || 'offline'
       });
       
       if (error) throw error;
@@ -401,7 +394,7 @@ export default function Students() {
             <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
               Students & Individual Timetables
             </h1>
-            <p className="text-muted-foreground">Generate personalized AI-powered timetables for individual students</p>
+            <p className="text-muted-foreground">Generate personalized offline timetables for individual students</p>
           </div>
         </div>
 
@@ -668,7 +661,7 @@ export default function Students() {
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle>Generate Timetable for {selectedStudentForGeneration.name}</CardTitle>
-                    <p className="text-sm text-muted-foreground mt-1">Configure AI generation options</p>
+                    <p className="text-sm text-muted-foreground mt-1">Configure offline generation options</p>
                   </div>
                   <Button
                     variant="ghost"
@@ -788,9 +781,9 @@ export default function Students() {
                   <div className="flex items-start gap-2">
                     <Sparkles className="w-5 h-5 text-blue-600 mt-0.5" />
                     <div>
-                      <p className="text-sm font-medium text-blue-900">AI-Powered Generation</p>
+                      <p className="text-sm font-medium text-blue-900">Offline Generation</p>
                       <p className="text-xs text-blue-700 mt-1">
-                        Using Gemini 2.0 Flash to create an optimized, conflict-free personalized timetable
+                        Using the local algorithm to create an optimized, conflict-free personalized timetable
                       </p>
                     </div>
                   </div>
