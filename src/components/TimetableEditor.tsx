@@ -205,22 +205,56 @@ export function TimetableEditor({
   };
 
   const predefinedOptions = [
-    { value: 'LIBRARY', label: 'Library Period' },
-    { value: 'INTERNSHIP', label: 'Internship' },
-    { value: 'SEMINAR', label: 'Seminar' },
-    { value: 'MENTORING', label: 'Mentoring' },
-    { value: 'SPORTS', label: 'Sports/Physical Education' },
-    { value: 'FREE', label: 'Free Period' }
+    { value: 'Library Period', label: 'Library Period' },
+    { value: 'Internship', label: 'Internship' },
+    { value: 'Seminar', label: 'Seminar' },
+    { value: 'Mentoring', label: 'Mentoring' },
+    { value: 'Sports/Physical Education', label: 'Sports/Physical Education' },
+    { value: 'Free Period', label: 'Free Period' }
   ];
 
-  const handlePredefinedSelect = (option: typeof predefinedOptions[0]) => {
-    setEditData({
-      subject: option.label,
-      code: option.value,
-      staff: 'TBD',
-      room: 'TBD',
-      type: 'theory'
-    });
+  const handlePredefinedSelect = async (option: typeof predefinedOptions[0]) => {
+    try {
+      // Find the predefined subject in the database by name
+      const subject = subjects.find(s => s.name === option.value);
+      
+      if (!subject) {
+        toast.error('Subject, Staff, or Room not found in the database. Please run the database migration to add predefined subjects.');
+        return;
+      }
+
+      // Find staff assigned to this subject
+      const { data: staffSubjects } = await supabase
+        .from('staff_subjects')
+        .select('staff_id, staff:staff_id(id, name)')
+        .eq('subject_id', subject.id)
+        .limit(1)
+        .single();
+
+      // Find a general room
+      const { data: generalRoom } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('room_number', 'GENERAL')
+        .limit(1)
+        .single();
+
+      const staffName = staffSubjects?.staff?.name || 'To Be Assigned';
+      const roomNumber = generalRoom?.room_number || 'GENERAL';
+
+      setEditData({
+        subject: subject.name,
+        code: subject.code,
+        staff: staffName,
+        room: roomNumber,
+        type: subject.subject_type || 'theory'
+      });
+
+      toast.success(`${option.label} selected successfully`);
+    } catch (error) {
+      console.error('Error selecting predefined option:', error);
+      toast.error('Failed to load predefined subject. Please ensure the database migration has been applied.');
+    }
   };
 
   const handleSubjectSelect = (subjectId: string) => {
